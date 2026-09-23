@@ -1,0 +1,531 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>BoneHubQualityCheck</class>
+ <widget class="qMRMLWidget" name="BoneHubQualityCheck">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>380</width>
+    <height>760</height>
+   </rect>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <widget class="ctkCollapsibleButton" name="serverCollapsibleButton">
+     <property name="text">
+      <string>Server</string>
+     </property>
+     <layout class="QVBoxLayout" name="serverLayout">
+      <item>
+       <layout class="QFormLayout" name="serverFormLayout">
+        <item row="0" column="0">
+         <widget class="QLabel" name="serverUrlLabel">
+          <property name="text">
+           <string>Server URL:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="1">
+         <widget class="QLineEdit" name="serverUrlLineEdit">
+          <property name="toolTip">
+           <string>Address of the quality-check server, for example http://localhost:8000</string>
+          </property>
+          <property name="placeholderText">
+           <string>http://localhost:8000</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="0">
+         <widget class="QLabel" name="apiKeyLabel">
+          <property name="text">
+           <string>API key:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="1">
+         <widget class="QLineEdit" name="apiKeyLineEdit">
+          <property name="toolTip">
+           <string>The reviewer key your administrator gave you. It is shown only once, at creation.</string>
+          </property>
+          <property name="echoMode">
+           <enum>QLineEdit::Password</enum>
+          </property>
+          <property name="placeholderText">
+           <string>bhqc_...</string>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="1">
+         <layout class="QHBoxLayout" name="keyOptionsLayout">
+          <item>
+           <widget class="QCheckBox" name="showKeyCheckBox">
+            <property name="text">
+             <string>Show key</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QCheckBox" name="rememberKeyCheckBox">
+            <property name="toolTip">
+             <string>Keep the key in this computer's application settings, so it is there next time.</string>
+            </property>
+            <property name="text">
+             <string>Remember</string>
+            </property>
+            <property name="checked">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <spacer name="keyOptionsSpacer">
+            <property name="orientation">
+             <enum>Qt::Horizontal</enum>
+            </property>
+            <property name="sizeHint" stdset="0">
+             <size>
+              <width>20</width>
+              <height>10</height>
+             </size>
+            </property>
+           </spacer>
+          </item>
+         </layout>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <widget class="QPushButton" name="connectButton">
+        <property name="toolTip">
+         <string>Check the server and the key, and fetch the BoneHub label map.</string>
+        </property>
+        <property name="text">
+         <string>Connect</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="connectionStatusLabel">
+        <property name="text">
+         <string/>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="ctkCollapsibleButton" name="subjectCollapsibleButton">
+     <property name="enabled">
+      <bool>false</bool>
+     </property>
+     <property name="text">
+      <string>Subject</string>
+     </property>
+     <layout class="QVBoxLayout" name="subjectLayout">
+      <item>
+       <layout class="QHBoxLayout" name="subjectButtonsLayout">
+        <item>
+         <widget class="QPushButton" name="nextSubjectButton">
+          <property name="toolTip">
+           <string>Lease the next subject from the queue and load it into the scene.</string>
+          </property>
+          <property name="text">
+           <string>Get next subject</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="reloadSubjectButton">
+          <property name="toolTip">
+           <string>Load a subject you are already holding again, for instance after restarting Slicer.</string>
+          </property>
+          <property name="text">
+           <string>Reload subject in hand</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <widget class="QLabel" name="subjectKeyLabel">
+        <property name="text">
+         <string>No subject in hand.</string>
+        </property>
+        <property name="textInteractionFlags">
+         <set>Qt::TextSelectableByMouse</set>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="expiresLabel">
+        <property name="text">
+         <string/>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QTextBrowser" name="subjectInfoTextBrowser">
+        <property name="toolTip">
+         <string>The subject's entry in Subject_info_XXX.json, without the per-label dictionaries.</string>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>16777215</width>
+          <height>160</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <layout class="QHBoxLayout" name="leaseButtonsLayout">
+        <item>
+         <widget class="QPushButton" name="extendLeaseButton">
+          <property name="toolTip">
+           <string>Keep the subject longer, while you are still working on it.</string>
+          </property>
+          <property name="text">
+           <string>Extend lease</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="releaseSubjectButton">
+          <property name="toolTip">
+           <string>Give the subject back to the queue without judging it. Your corrections are lost.</string>
+          </property>
+          <property name="text">
+           <string>Release subject</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="ctkCollapsibleButton" name="reviewCollapsibleButton">
+     <property name="enabled">
+      <bool>false</bool>
+     </property>
+     <property name="text">
+      <string>Review</string>
+     </property>
+     <layout class="QVBoxLayout" name="reviewLayout">
+      <item>
+       <widget class="QPushButton" name="segmentEditorButton">
+        <property name="toolTip">
+         <string>Switch to the Segment Editor with this subject's image and segmentation selected.</string>
+        </property>
+        <property name="text">
+         <string>Correct in Segment Editor</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QTableWidget" name="labelsTableWidget">
+        <property name="toolTip">
+         <string>Tick every label you vouch for. Ticked labels are marked "reviewed and corrected" (status 2) in Subject_info; the others keep the status they have. A segment's name is its label: rename a segment to relabel it.</string>
+        </property>
+        <property name="alternatingRowColors">
+         <bool>true</bool>
+        </property>
+        <property name="selectionMode">
+         <enum>QAbstractItemView::NoSelection</enum>
+        </property>
+        <property name="minimumSize">
+         <size>
+          <width>0</width>
+          <height>180</height>
+         </size>
+        </property>
+        <attribute name="verticalHeaderVisible">
+         <bool>false</bool>
+        </attribute>
+        <column>
+         <property name="text">
+          <string>Label</string>
+         </property>
+        </column>
+        <column>
+         <property name="text">
+          <string>Value</string>
+         </property>
+        </column>
+        <column>
+         <property name="text">
+          <string>Dataset</string>
+         </property>
+        </column>
+        <column>
+         <property name="text">
+          <string>Painted</string>
+         </property>
+        </column>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="labelsSummaryLabel">
+        <property name="text">
+         <string/>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <layout class="QHBoxLayout" name="labelSelectionLayout">
+        <item>
+         <widget class="QPushButton" name="refreshLabelsButton">
+          <property name="toolTip">
+           <string>Read the segments in the scene again, after editing them.</string>
+          </property>
+          <property name="text">
+           <string>Refresh</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="selectAllLabelsButton">
+          <property name="text">
+           <string>Tick all</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="selectNoLabelsButton">
+          <property name="text">
+           <string>Tick none</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <layout class="QHBoxLayout" name="addLabelLayout">
+        <item>
+         <widget class="QComboBox" name="addLabelComboBox">
+          <property name="toolTip">
+           <string>A BoneHub label to add as an empty segment. Type to search; only names from this list are accepted by the server.</string>
+          </property>
+          <property name="editable">
+           <bool>true</bool>
+          </property>
+          <property name="insertPolicy">
+           <enum>QComboBox::NoInsert</enum>
+          </property>
+          <property name="sizeAdjustPolicy">
+           <enum>QComboBox::AdjustToMinimumContentsLengthWithIcon</enum>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="addSegmentButton">
+          <property name="toolTip">
+           <string>Add an empty segment for the selected label, ready to be painted.</string>
+          </property>
+          <property name="text">
+           <string>Add segment</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="ctkCollapsibleButton" name="submitCollapsibleButton">
+     <property name="enabled">
+      <bool>false</bool>
+     </property>
+     <property name="text">
+      <string>Submit</string>
+     </property>
+     <layout class="QVBoxLayout" name="submitLayout">
+      <item>
+       <widget class="QLabel" name="commentLabel">
+        <property name="text">
+         <string>Comment (kept in the audit trail):</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPlainTextEdit" name="commentTextEdit">
+        <property name="maximumSize">
+         <size>
+          <width>16777215</width>
+          <height>90</height>
+         </size>
+        </property>
+        <property name="placeholderText">
+         <string>What you changed, or what is wrong with this subject.</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <layout class="QHBoxLayout" name="verdictLayout">
+        <item>
+         <widget class="QPushButton" name="confirmButton">
+          <property name="toolTip">
+           <string>Upload the reviewed segmentation, replacing the one in the dataset, and mark the ticked labels "reviewed and corrected" (status 2).</string>
+          </property>
+          <property name="text">
+           <string>Confirm and submit</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="rejectButton">
+          <property name="toolTip">
+           <string>Record that this subject is not good enough. Nothing in the dataset is changed.</string>
+          </property>
+          <property name="text">
+           <string>Reject</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="autoNextCheckBox">
+        <property name="toolTip">
+         <string>Ask for the next subject as soon as this one is submitted.</string>
+        </property>
+        <property name="text">
+         <string>Get the next subject after submitting</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="submitStatusLabel">
+        <property name="text">
+         <string/>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="ctkCollapsibleButton" name="advancedCollapsibleButton">
+     <property name="text">
+      <string>Advanced</string>
+     </property>
+     <property name="collapsed">
+      <bool>true</bool>
+     </property>
+     <layout class="QVBoxLayout" name="advancedLayout">
+      <item>
+       <layout class="QFormLayout" name="advancedFormLayout">
+        <item row="0" column="0">
+         <widget class="QLabel" name="workspaceLabel">
+          <property name="text">
+           <string>Working folder:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="1">
+         <widget class="ctkPathLineEdit" name="workspacePathLineEdit">
+          <property name="toolTip">
+           <string>Where downloaded images and segmentations are kept while they are being reviewed.</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="0">
+         <widget class="QLabel" name="timeoutLabel">
+          <property name="text">
+           <string>Network timeout:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="1">
+         <widget class="QSpinBox" name="timeoutSpinBox">
+          <property name="toolTip">
+           <string>How long to wait for the server. Raise it for large images over a slow link.</string>
+          </property>
+          <property name="suffix">
+           <string> s</string>
+          </property>
+          <property name="minimum">
+           <number>10</number>
+          </property>
+          <property name="maximum">
+           <number>7200</number>
+          </property>
+          <property name="singleStep">
+           <number>30</number>
+          </property>
+          <property name="value">
+           <number>300</number>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="keepFilesCheckBox">
+        <property name="toolTip">
+         <string>Leave the downloaded and uploaded files in the working folder instead of deleting them.</string>
+        </property>
+        <property name="text">
+         <string>Keep downloaded files after submitting</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="openWorkspaceButton">
+        <property name="text">
+         <string>Open working folder</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <spacer name="verticalSpacer">
+     <property name="orientation">
+      <enum>Qt::Vertical</enum>
+     </property>
+     <property name="sizeHint" stdset="0">
+      <size>
+       <width>20</width>
+       <height>40</height>
+      </size>
+     </property>
+    </spacer>
+   </item>
+  </layout>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>qMRMLWidget</class>
+   <extends>QWidget</extends>
+   <header>qMRMLWidget.h</header>
+   <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>ctkCollapsibleButton</class>
+   <extends>QWidget</extends>
+   <header>ctkCollapsibleButton.h</header>
+   <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>ctkPathLineEdit</class>
+   <extends>QWidget</extends>
+   <header>ctkPathLineEdit.h</header>
+  </customwidget>
+ </customwidgets>
+ <resources/>
+ <connections/>
+</ui>
