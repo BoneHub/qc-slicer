@@ -220,7 +220,7 @@
       <item>
        <widget class="QPushButton" name="segmentEditorButton">
         <property name="toolTip">
-         <string>Switch to the Segment Editor with this subject's image and segmentation selected.</string>
+         <string>Switch to the Segment Editor with this subject's segmentation selected, and its image when the server sent one.</string>
         </property>
         <property name="text">
          <string>Correct in Segment Editor</string>

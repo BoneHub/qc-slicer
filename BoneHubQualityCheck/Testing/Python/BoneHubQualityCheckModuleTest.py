@@ -2,9 +2,11 @@
 
 The tests in ``BoneHubQualityCheck.py`` itself cover the logic that touches the dataset.
 These cover the panel: that the .ui file still carries every widget the code reaches for,
-that the sections stay locked until there is something to do, and that the tick boxes --
-which decide which labels are marked "reviewed and corrected" -- behave across a refresh.
-They need a module widget, so they only run in a Slicer with a main window.
+that the sections stay locked until there is something to do, that a subject sent without
+its segmentation can only be rejected while one sent without its image can be corrected,
+and that the tick boxes -- which decide which labels are marked "reviewed and corrected" --
+behave across a refresh. They need a module widget, so they only run in a Slicer with a
+main window.
 """
 
 import qt
@@ -48,6 +50,8 @@ class BoneHubQualityCheckModuleTest(ScriptedLoadableModuleTest):
         self.test_SectionsAreLockedUntilThereIsSomethingToDo()
         self.test_TheKeyIsMaskedUnlessAsked()
         self.test_LabelPickerIsInAnatomicalOrder()
+        self.test_ASubjectWithoutASegmentationCanOnlyBeRejected()
+        self.test_ASubjectWithoutAnImageCanBeCorrected()
         self.test_TicksSurviveARefresh()
 
     # ---------------------------------------------------------------- helpers
@@ -55,13 +59,19 @@ class BoneHubQualityCheckModuleTest(ScriptedLoadableModuleTest):
         slicer.util.selectModule("BoneHubQualityCheck")
         return slicer.modules.bonehubqualitycheck.widgetRepresentation().self()
 
-    def subjectInScene(self, widget):
+    def subjectInScene(self, widget, withImage=True):
         """Put a two-label subject in the scene and point the panel at it."""
         logic = BoneHubQualityCheck.BoneHubQualityCheckTest()
         logic.setUp()
-        builtLogic, _volume, _expected = logic._buildSubject()
+        builtLogic, _volume, _expected = logic._buildSubject(withImage=withImage)
         widget.logic = builtLogic
-        builtLogic.session.handout = {"segmentation_labels": {"SKULL": 1, "FEMUR_LEFT": 1}}
+        builtLogic.session.handout = {
+            "assignment_id": "a1",
+            "subject_key": "001_000001",
+            "has_image": withImage,
+            "has_segmentation": True,
+            "segmentation_labels": {"SKULL": 1, "FEMUR_LEFT": 1},
+        }
         return builtLogic
 
     # ------------------------------------------------------------------ tests
@@ -98,6 +108,46 @@ class BoneHubQualityCheckModuleTest(ScriptedLoadableModuleTest):
         widget.populateAddLabelComboBox()
         self.assertEqual(widget.ui.addLabelComboBox.count, 2)
         self.assertEqual(widget.ui.addLabelComboBox.itemText(0), "SKULL")
+
+    def test_ASubjectWithoutASegmentationCanOnlyBeRejected(self):
+        """There is nothing to correct, and the last subject's segmentation must not stand in for it."""
+        self.delayDisplay("Subject without a segmentation")
+        widget = self.widget()
+        logic = self.subjectInScene(widget)
+        handout = {"assignment_id": "a2", "subject_key": "001_000002", "has_image": True, "has_segmentation": False}
+        logic.session.handout = handout
+        # Nothing is downloaded for such a subject, so no server is needed.
+        widget.downloadAndLoad(handout)
+
+        self.assertIsNone(logic.segmentationNode)
+        self.assertEqual(slicer.mrmlScene.GetNodesByClass("vtkMRMLSegmentationNode").GetNumberOfItems(), 0)
+        self.assertEqual(widget.ui.labelsTableWidget.rowCount, 0)
+        self.assertFalse(widget.ui.reviewCollapsibleButton.enabled)
+        self.assertFalse(widget.ui.confirmButton.enabled)
+        self.assertTrue(widget.ui.submitCollapsibleButton.enabled)
+        self.assertTrue(widget.ui.rejectButton.enabled)
+        self.assertNotEqual(widget.ui.commentTextEdit.plainText, "", "the rejection comes with its reason")
+
+    def test_ASubjectWithoutAnImageCanBeCorrected(self):
+        """Sent the segmentation only: the panel is open, and the Segment Editor has a volume to edit with."""
+        self.delayDisplay("Subject without an image")
+        widget = self.widget()
+        logic = self.subjectInScene(widget, withImage=False)
+        widget.updateGuiFromSession()
+        self.assertTrue(widget.ui.reviewCollapsibleButton.enabled)
+        self.assertTrue(widget.ui.confirmButton.enabled)
+        self.assertIn("no image", widget.ui.subjectKeyLabel.text)
+
+        logic.openSegmentEditor()
+        try:
+            editor = slicer.modules.segmenteditor.widgetRepresentation().self().editor
+            self.assertEqual(editor.segmentationNode().GetID(), logic.segmentationNode.GetID())
+            self.assertEqual(editor.sourceVolumeNode().GetID(), logic.referenceVolumeNode.GetID())
+            editor.setActiveEffectByName("Paint")
+            self.assertIsNotNone(editor.activeEffect(), "the editing tools are available")
+            editor.setActiveEffect(None)
+        finally:
+            slicer.util.selectModule("BoneHubQualityCheck")
 
     def test_TicksSurviveARefresh(self):
         """The ticks are the verdict, so refreshing must not quietly rewrite them."""

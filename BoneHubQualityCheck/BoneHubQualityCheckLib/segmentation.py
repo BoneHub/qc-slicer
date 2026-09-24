@@ -55,6 +55,37 @@ def geometry_from_ijk_to_ras(ijk_to_ras) -> tuple:
     return origin, tuple(float(v) for v in spacing), tuple(float(v) for v in direction.ravel())
 
 
+def ijk_to_ras_from_geometry(geometry: tuple):
+    """3D Slicer's IJK-to-RAS matrix, as a 4x4 array, from ``(origin, spacing, direction)`` in LPS.
+
+    The inverse of :func:`geometry_from_ijk_to_ras`.
+    """
+    import numpy as np
+
+    origin, spacing, direction = geometry
+    lps = np.eye(4)
+    lps[:3, :3] = np.asarray(direction, dtype=float).reshape(3, 3) * np.asarray(spacing, dtype=float)
+    lps[:3, 3] = origin
+    return np.diag([-1.0, -1.0, 1.0, 1.0]) @ lps
+
+
+def read_voxel_grid(path: Path) -> tuple:
+    """``(size, geometry)`` of the voxel grid of an image or segmentation file.
+
+    size is the number of voxels along i, j and k; geometry is ``(origin, spacing,
+    direction)`` in LPS, as :func:`write_segmentation` takes it. Only the header is read, so
+    this is quick even for a whole-body scan.
+    """
+    import SimpleITK as sitk
+
+    reader = sitk.ImageFileReader()
+    reader.SetFileName(str(path))
+    reader.ReadImageInformation()
+    if reader.GetDimension() != 3:
+        raise ValueError(f"'{Path(path).name}' is not a 3D volume; it has {reader.GetDimension()} dimensions.")
+    return tuple(reader.GetSize()), (reader.GetOrigin(), reader.GetSpacing(), reader.GetDirection())
+
+
 def write_segmentation(numbers, labels: list, geometry: tuple, output_path: Path) -> list:
     """Write segment numbers as a BoneHub segmentation.
 

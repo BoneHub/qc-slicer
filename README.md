@@ -5,9 +5,10 @@ server](https://github.com/BoneHub/bonehub_dataset_quality_check_server), the hu
 a client–server setup for quality check of segmentations in the
 [BoneHub Dataset](https://github.com/BoneHub/BoneHub-Dataset).
 
-The server hands out subjects one at a time. This extension leases one, loads its image and
-segmentation into 3D Slicer with every segment named and coloured as its BoneHub label, and
-sends the corrected segmentation back. Confirming replaces the segmentation in the dataset
+The server hands out subjects one at a time. This extension leases one, loads its
+segmentation into 3D Slicer with every segment named and coloured as its BoneHub label,
+together with its image when the server sends one, and sends the corrected segmentation
+back. Confirming replaces the segmentation in the dataset
 and sets the labels you vouch for in `Subject_info_XXX.json` to status `2` ("available,
 reviewed and corrected"), whatever status they had. Rejecting leaves the dataset untouched
 and is recorded only in the audit trail.
@@ -27,6 +28,7 @@ which side to update.
 
 - 3D Slicer 5.6 or newer (developed and tested against 5.12)
 - A server URL and an API key from your administrator, for an account with the editor role
+  that is sent segmentations, with or without their images (see [below](#what-the-server-sends))
 - A quality-check server of version 0.3 or newer (BoneHub data schema 0.3), which knows
   editors and reviewers
 
@@ -65,6 +67,27 @@ Until the extension is in the Extensions Manager, install it from source:
 `Refresh` re-reads the segments after an edit; returning to the module from the Segment
 Editor does the same automatically.
 
+### What the server sends
+
+The server's administrator decides, per account, whether it is sent each subject's image,
+its segmentation, or both. The segmentation is what you correct, so the extension needs
+it; the image is optional.
+
+| The server sends | What happens |
+| --- | --- |
+| The image and the segmentation | Both are loaded. The segmentation is written back on the image's voxel grid |
+| The segmentation only | The segmentation is loaded over a blank volume on its own voxel grid, which is the image's on the server, and written back on that grid. Painting, erasing, scissors, islands, smoothing, margins and the logical operators all work. Tools that follow image intensity, such as *Threshold* or *Grow from seeds*, have nothing to follow |
+| The image only | The account is refused when connecting, since it would have nothing to correct. Ask your administrator to send it the segmentation too |
+
+A subject that has no segmentation is not loaded. The review section stays locked and the
+comment is filled in for you: reject the subject, so that it is not handed to you again.
+Releasing it puts it back in the queue, and you may be given it again.
+
+Without the image there is only the segmentation's own grid to write back on. If the
+server reports that the stored segmentation is not on its image's grid, the extension
+warns you on loading, because a confirmation would be refused; reject such a subject with
+a comment.
+
 ### What happens to the labels you tick
 
 The *Dataset* column shows each label's status in `Subject_info_XXX.json` today: `0` not
@@ -87,7 +110,8 @@ the segment's name is the only record of its label, and the tags are dropped so 
 cannot contradict a rename.
 
 On submission the segments are written back in the same format, onto the image's own
-voxel grid: one segment number per label, in ascending label value, as the dataset's own
+voxel grid (without the image, the grid the segmentation arrived on, read from its file
+header): one segment number per label, in ascending label value, as the dataset's own
 files are numbered. A BoneHub mask holds one label per voxel, so where two segments
 overlap the higher label value wins, the same way every time. The server refuses an upload
 whose voxel grid does not match the image, so this is checked by the test suite rather
@@ -131,8 +155,8 @@ There are two suites, both registered as ctest targets when the extension is bui
 
 | Suite | What it covers |
 | --- | --- |
-| `BoneHubQualityCheck.py` | The label colours and label map, and the round trip of a BoneHub `.seg.nrrd` through the scene: that labels, voxels and the voxel grid come back unchanged (on an oblique image), that renaming a segment relabels it, that a segmentation can be started from scratch, and that a segment which is not a BoneHub label is refused |
-| `Testing/Python/BoneHubQualityCheckModuleTest.py` | The panel: that the `.ui` file still carries every widget the code uses, that the sections stay locked until there is something to do, that the key stays masked, and that the tick boxes behave across a refresh |
+| `BoneHubQualityCheck.py` | The label colours and label map; that an account sent images only is refused; and the round trip of a BoneHub `.seg.nrrd` through the scene: that labels, voxels and the voxel grid come back unchanged (on an oblique image), that renaming a segment relabels it, that a missing bone can be added, that a segmentation edited without its image is written back on the image's grid, that a subject is not loaded without its segmentation, and that a segment which is not a BoneHub label is refused |
+| `Testing/Python/BoneHubQualityCheckModuleTest.py` | The panel: that the `.ui` file still carries every widget the code uses, that the sections stay locked until there is something to do, that the key stays masked, that a subject without a segmentation can only be rejected, that the Segment Editor can edit a subject without its image, and that the tick boxes behave across a refresh |
 
 The first also runs from **Reload and Test** in the module's *Advanced* section. Running
 either against a source checkout, with `MODULE` standing for the path to the

@@ -6,13 +6,14 @@ the application. The scene side of a review -- volumes, segmentations, the segme
 
 The extension works in the editor role: it corrects segmentations and uploads them. The
 server refuses the key of an account that is not an editor, and tells a reviewer to use the
-server's review page instead.
+server's review page instead. The segmentation is what an editor corrects, so an account the
+server sends the image only is refused here too; the image is optional.
 
 A session owns one working folder per assignment::
 
     <workspace>/<subject_key>/
-        <subject_key>.nii.gz                 the image, as downloaded
-        <subject_key>_segmentation.seg.nrrd  the segmentation on the server, if any
+        <subject_key>_segmentation.seg.nrrd  the segmentation on the server
+        <subject_key>.nii.gz                 the image, if the server sends it
         <subject_key>_reviewed.seg.nrrd      what the editor sends back
 """
 
@@ -61,9 +62,10 @@ class BoneHubQCSession:
 
         Raises ``QCClientError`` when the server is unreachable, the key is refused -- also
         when its account is not an editor, with the server's word on where to go instead --
-        or the server serves another version of the BoneHub data schema. A connection that
-        was already working is left in place, so a failed reconnect never strands an editor
-        holding a subject they can no longer submit.
+        the account is sent images without their segmentations, or the server serves another
+        version of the BoneHub data schema. A connection that was already working is left in
+        place, so a failed reconnect never strands an editor holding a subject they can no
+        longer submit.
         """
         base_url = (base_url or "").strip()
         api_key = (api_key or "").strip()
@@ -80,6 +82,14 @@ class BoneHubQCSession:
                 f"The server serves BoneHub data schema {version or 'older than 0.3'}, but this extension is "
                 f"written for schema {SCHEMA_VERSION}, whose segmentations are {SEGMENTATION_SUFFIX} files. "
                 "Update whichever of the two is older."
+            )
+        # The segmentation is what an editor corrects. An account sent the image only would
+        # have nothing to correct, and the server would not let it replace a segmentation it
+        # has not seen.
+        if info.get("data_access") == "image":
+            raise QCClientError(
+                f"'{info.get('user', '?')}' is sent the image only, but 3D Slicer corrects segmentations and "
+                "cannot work without them. Ask your administrator to send this account the segmentation as well."
             )
         # Every segment is checked against the label map, so a server that cannot send it
         # leaves nothing to review with.
@@ -162,6 +172,7 @@ class BoneHubQCSession:
         return self.subject_folder() / f"{self.subject_key}_reviewed{SEGMENTATION_SUFFIX}"
 
     def download_image(self) -> Path:
+        """Download the image. Only call it when the handout says ``has_image``."""
         destination = self.subject_folder() / f"{self.subject_key}.nii.gz"
         self.image_path = self._require_client().download_image(self._require_assignment(), destination)
         return self.image_path
