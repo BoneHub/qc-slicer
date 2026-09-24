@@ -50,8 +50,10 @@ Until the extension is in the Extensions Manager, install it from source:
    *Remember* to keep it in this computer's Slicer settings, or untick it on a shared
    machine. Connecting checks that the key is an editor's, and also fetches the BoneHub label
    map from the server, so the extension never needs updating when the dataset gains labels.
-2. **Subject** — *Get next subject* leases one and loads it. The slice views are centred on
-   the segmentation, so you land on the bones rather than on an empty corner of the volume.
+2. **Subject** — *Get next subject* leases one and loads it into an empty scene: the scene
+   is closed first, so nothing of the last subject — nor anything else you loaded — is left
+   in it. The slice views are centred on the segmentation, so you land on the bones rather
+   than on an empty corner of the volume.
    *Reload subject in hand* picks up a subject you already hold, for instance after
    restarting Slicer.
 3. **Review** — *Correct in Segment Editor* switches to the Segment Editor with the image
@@ -155,7 +157,7 @@ There are two suites, both registered as ctest targets when the extension is bui
 
 | Suite | What it covers |
 | --- | --- |
-| `BoneHubQualityCheck.py` | The label colours and label map; that an account sent images only is refused; and the round trip of a BoneHub `.seg.nrrd` through the scene: that labels, voxels and the voxel grid come back unchanged (on an oblique image), that renaming a segment relabels it, that a missing bone can be added, that a segmentation edited without its image is written back on the image's grid, that a subject is not loaded without its segmentation, and that a segment which is not a BoneHub label is refused |
+| `BoneHubQualityCheck.py` | The label colours and label map; that an account sent images only is refused; and the round trip of a BoneHub `.seg.nrrd` through the scene: that labels, voxels and the voxel grid come back unchanged (on an oblique image), that renaming a segment relabels it, that a missing bone can be added, that a segmentation edited without its image is written back on the image's grid, that a subject is not loaded without its segmentation, that every subject starts from an empty scene, and that a segment which is not a BoneHub label is refused |
 | `Testing/Python/BoneHubQualityCheckModuleTest.py` | The panel: that the `.ui` file still carries every widget the code uses, that the sections stay locked until there is something to do, that the key stays masked, that a subject without a segmentation can only be rejected, that the Segment Editor can edit a subject without its image, and that the tick boxes behave across a refresh |
 
 The first also runs from **Reload and Test** in the module's *Advanced* section. Running

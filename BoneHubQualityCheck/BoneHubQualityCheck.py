@@ -93,6 +93,8 @@ sets the labels you vouch for in <code>Subject_info_XXX.json</code> to status 2,
 and corrected". Rejecting changes nothing in the dataset and is only recorded in the audit
 trail.
 <p>A segment's name is its BoneHub label: rename a segment to relabel it.
+<p>Each subject is loaded into an empty scene. The scene is closed when you leave a subject,
+so anything else you loaded into it goes as well.
 """)
         self.parent.acknowledgementText = _("""
 Developed for the BoneHub Dataset at the Department of Biomechanical Engineering,
@@ -246,6 +248,7 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             return
         self.applySettingsToSession()
         session = self.logic.session
+        self.clearReview()
 
         try:
             handout = self.runWithProgress(_("Asking the server for the next subject..."), session.next_subject)
@@ -289,6 +292,7 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
 
         if not self.confirmDiscardingCurrentSubject():
             return
+        self.clearReview()
         try:
             handout = self.runWithProgress(
                 _("Fetching the subject..."), lambda: session.reload_assignment(assignment["assignment_id"])
@@ -309,9 +313,7 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         key = handout.get("subject_key", "")
         # Whatever happens next, the last subject's segmentation is not this one's, and must
         # not be what confirming this one uploads.
-        self.logic.clearScene()
-        self.ui.labelsTableWidget.setRowCount(0)  # so the new subject does not inherit ticks
-        self.ui.commentTextEdit.plainText = ""
+        self.clearReview()
         self.setStatus(self.ui.submitStatusLabel, "")
 
         if not handout.get("has_segmentation"):
@@ -398,6 +400,17 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             ),
             windowTitle=_("Subject still in hand"),
         )
+
+    def clearReview(self):
+        """Empty the scene and the panel of the last subject.
+
+        Called before the server is asked for another subject, as well as before one is
+        loaded: by then the session has let go of the last subject, so a failed request must
+        not leave it on screen either.
+        """
+        self.logic.clearScene()
+        self.ui.labelsTableWidget.setRowCount(0)  # so the new subject does not inherit ticks
+        self.ui.commentTextEdit.plainText = ""
 
     # ---------------------------------------------------------------- review
     def populateAddLabelComboBox(self):
@@ -618,9 +631,7 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         session = self.logic.session
         if not self.ui.keepFilesCheckBox.checked:
             session.discard_files(session.finished_folder)
-        self.logic.clearScene()
-        self.ui.labelsTableWidget.setRowCount(0)
-        self.ui.commentTextEdit.plainText = ""
+        self.clearReview()
         if result:
             logging.info("BoneHub quality check: %s", json.dumps(result))
         self.setStatus(self.ui.submitStatusLabel, message, ok=ok)
@@ -653,6 +664,11 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             parent=slicer.util.mainWindow(), windowTitle=_("BoneHub Quality Check"), labelText=labelText, maximum=0
         )
         dialog.setCancelButton(None)
+        # Slicer's progress dialog is not modal, so the events processed below would let the
+        # editor press 'Get next subject' again mid-download and load a second subject over
+        # the first, the scene holding one subject's files while the session holds the other.
+        dialog.setWindowModality(qt.Qt.ApplicationModal)
+        dialog.show()
         thread = threading.Thread(target=runner, daemon=True)
         thread.start()
         try:
@@ -733,10 +749,13 @@ class BoneHubQualityCheckLogic(ScriptedLoadableModuleLogic):
 
     # ------------------------------------------------------------------ scene
     def clearScene(self):
-        """Remove what the last review put in the scene, leaving the rest of it alone."""
-        for node in (self.segmentationNode, self.referenceVolumeNode, self.imageVolumeNode):
-            if node is not None and slicer.mrmlScene.IsNodePresent(node):
-                slicer.mrmlScene.RemoveNode(node)
+        """Close the scene, so that every subject starts from an empty one.
+
+        Everything goes, not only the nodes loaded here: markups the editor placed, a volume
+        rendering's ROI, or a node a failed load lost track of would otherwise stay under the
+        next subject and pass for part of it.
+        """
+        slicer.mrmlScene.Clear(0)
         self.imageVolumeNode = None
         self.referenceVolumeNode = None
         self.segmentationNode = None
@@ -1025,6 +1044,7 @@ class BoneHubQualityCheckTest(ScriptedLoadableModuleTest):
         self.test_AMissingBoneCanBeAdded()
         self.test_ASegmentationIsEditedWithoutItsImage()
         self.test_TheSegmentationIsRequired()
+        self.test_ANewSubjectStartsFromAnEmptyScene()
         self.test_UnknownSegmentsAreRefused()
 
     # ------------------------------------------------------------------ tests
@@ -1212,6 +1232,24 @@ class BoneHubQualityCheckTest(ScriptedLoadableModuleTest):
         self.assertFalse(slicer.mrmlScene.IsNodePresent(lastSegmentation), "the last subject's segmentation is gone")
         self.assertFalse(slicer.mrmlScene.IsNodePresent(volumeNode))
         self.assertEqual(logic.segmentLabelValues(), {})
+
+    def test_ANewSubjectStartsFromAnEmptyScene(self):
+        """Nothing of the last subject may stay under the next one and pass for part of it."""
+        self.delayDisplay("An empty scene for every subject")
+        logic, _volumeNode, _expected = self._buildSubject()
+        lastSubject = [logic.segmentationNode, logic.imageVolumeNode]
+        # What an editor or a failed load can leave behind: a note, and a volume nobody tracks.
+        leftovers = [
+            slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsFiducialNode", "a note on 001_000001"),
+            slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode", "001_000001 lost track of"),
+        ]
+
+        logic.loadSubject({"subject_key": "001_000002"}, self.segmentationPath, self.imagePath)
+        for node in lastSubject + leftovers:
+            self.assertFalse(slicer.mrmlScene.IsNodePresent(node), f"'{node.GetName()}' outlived its subject")
+        self.assertEqual(slicer.mrmlScene.GetNodesByClass("vtkMRMLSegmentationNode").GetNumberOfItems(), 1)
+        self.assertEqual(slicer.mrmlScene.GetNodesByClass("vtkMRMLScalarVolumeNode").GetNumberOfItems(), 1)
+        self.assertEqual(slicer.mrmlScene.GetNodesByClass("vtkMRMLMarkupsNode").GetNumberOfItems(), 0)
 
     def test_UnknownSegmentsAreRefused(self):
         """A segment that is not a BoneHub label must be caught here, not by the server."""
