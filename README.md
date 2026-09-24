@@ -1,16 +1,22 @@
 # BoneHub Dataset Quality Check — 3D Slicer extension
 
-Reviewer client for the [BoneHub dataset quality-check
+Editor client for the [BoneHub dataset quality-check
 server](https://github.com/BoneHub/bonehub_dataset_quality_check_server), the human half of
 a client–server setup for quality check of segmentations in the
 [BoneHub Dataset](https://github.com/BoneHub/BoneHub-Dataset).
 
 The server hands out subjects one at a time. This extension leases one, loads its image and
 segmentation into 3D Slicer with every segment named and coloured as its BoneHub label, and
-sends the reviewed segmentation back. Confirming replaces the segmentation in the dataset
+sends the corrected segmentation back. Confirming replaces the segmentation in the dataset
 and sets the labels you vouch for in `Subject_info_XXX.json` to status `2` ("available,
 reviewed and corrected"), whatever status they had. Rejecting leaves the dataset untouched
 and is recorded only in the audit trail.
+
+The server gives each account one role or both: an **editor** corrects segmentations, here
+in 3D Slicer; a **reviewer** checks them in the browser, on the server's review page, and
+confirms or rejects them as they are. This extension works as an editor. The key of an
+account that is a reviewer only is refused when connecting, with the address of the review
+page to use instead; an account with both roles can work in either.
 
 Segmentations travel in the dataset's own format, BoneHub data schema 0.3's `.seg.nrrd`,
 which 3D Slicer opens natively. The extension works with a server of schema 0.3 only: it
@@ -20,8 +26,9 @@ which side to update.
 ## Requirements
 
 - 3D Slicer 5.6 or newer (developed and tested against 5.12)
-- A server URL and a reviewer API key from your administrator
-- A quality-check server of version 0.2 or newer (BoneHub data schema 0.3)
+- A server URL and an API key from your administrator, for an account with the editor role
+- A quality-check server of version 0.3 or newer (BoneHub data schema 0.3), which knows
+  editors and reviewers
 
 No Python packages are installed into Slicer: the client is written against the standard
 library, and writing segmentations uses the numpy and SimpleITK that ship with Slicer.
@@ -35,12 +42,12 @@ Until the extension is in the Extensions Manager, install it from source:
 3. Drag the `BoneHubQualityCheck` folder into **Additional module paths**.
 4. Restart Slicer. The module appears under **Segmentation → BoneHub Quality Check**.
 
-## Reviewing a subject
+## Correcting a subject
 
 1. **Server** — enter the URL and your API key and press *Connect*. The key is masked; tick
    *Remember* to keep it in this computer's Slicer settings, or untick it on a shared
-   machine. Connecting also fetches the BoneHub label map from the server, so the extension
-   never needs updating when the dataset gains labels.
+   machine. Connecting checks that the key is an editor's, and also fetches the BoneHub label
+   map from the server, so the extension never needs updating when the dataset gains labels.
 2. **Subject** — *Get next subject* leases one and loads it. The slice views are centred on
    the segmentation, so you land on the bones rather than on an empty corner of the volume.
    *Reload subject in hand* picks up a subject you already hold, for instance after

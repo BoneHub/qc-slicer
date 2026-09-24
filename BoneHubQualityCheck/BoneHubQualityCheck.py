@@ -1,12 +1,16 @@
-"""Reviewer client for the BoneHub dataset quality-check server.
+"""Editor client for the BoneHub dataset quality-check server.
 
-The module walks a reviewer through one subject at a time:
+The module walks an editor through one subject at a time:
 
-1. connect to the server with the reviewer's API key,
+1. connect to the server with the editor's API key,
 2. lease the next subject and load its image and segmentation into the scene,
 3. correct the segmentation in the Segment Editor,
-4. confirm (the reviewed segmentation goes back and its labels are marked "reviewed and
+4. confirm (the corrected segmentation goes back and its labels are marked "reviewed and
    corrected", status 2) or reject (the dataset is left untouched).
+
+The server gives each account the role of reviewer, editor, or both, and this module works as
+an editor. An account that is a reviewer only is refused when connecting and pointed to the
+server's review page, where reviewers work.
 
 Segmentations travel in the BoneHub dataset's own format, ``.seg.nrrd``, which 3D Slicer
 opens natively with one segment per label. In the scene a segment's name is its label, so
@@ -66,10 +70,13 @@ class BoneHubQualityCheck(ScriptedLoadableModule):
         self.parent.dependencies = ["Segmentations", "SegmentEditor"]
         self.parent.contributors = ["Hamid Alavi (University of Twente)"]
         self.parent.helpText = _("""
-Reviewer client for the <a href="https://github.com/BoneHub/bonehub_dataset_quality_check_server">BoneHub
+Editor client for the <a href="https://github.com/BoneHub/bonehub_dataset_quality_check_server">BoneHub
 dataset quality-check server</a>. Enter the server URL and the API key your administrator
 gave you, ask for the next subject, correct its segmentation in the Segment Editor, and
 send the verdict back.
+<p>The key must belong to an account with the editor role. Reviewers work in the browser
+instead, on the server's review page, and the key of an account that is a reviewer only is
+refused here.
 <p>Confirming uploads the reviewed segmentation, which replaces the one in the dataset, and
 sets the labels you vouch for in <code>Subject_info_XXX.json</code> to status 2, "reviewed
 and corrected". Rejecting changes nothing in the dataset and is only recorded in the audit
@@ -88,7 +95,7 @@ University of Twente.
 
 
 class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
-    """The reviewer's panel."""
+    """The editor's panel."""
 
     def __init__(self, parent=None):
         ScriptedLoadableModuleWidget.__init__(self, parent)
@@ -214,7 +221,7 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         scope = _("datasets {ids}").format(ids=", ".join(str(i) for i in datasets)) if datasets else _("all datasets")
         self.setStatus(
             self.ui.connectionStatusLabel,
-            _("Connected as '{user}' ({scope}). {labels} labels known, data schema {schema}.").format(
+            _("Connected as '{user}', editor ({scope}). {labels} labels known, data schema {schema}.").format(
                 user=info.get("user", "?"), scope=scope, labels=len(session.labels), schema=info.get("schema_version")
             ),
             ok=True,
@@ -246,7 +253,7 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.downloadAndLoad(handout)
 
     def onReloadSubject(self):
-        """Pick up a subject this reviewer already holds, after a restart or a lost scene."""
+        """Pick up a subject this editor already holds, after a restart or a lost scene."""
         self.applySettingsToSession()
         session = self.logic.session
         try:
@@ -369,11 +376,11 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
     def updateLabelsTable(self):
         """Show every label of this subject: what the dataset says, and what is in the scene.
 
-        Ticks the reviewer already made are kept, so refreshing after an edit in the
+        Ticks the editor already made are kept, so refreshing after an edit in the
         Segment Editor does not undo their choices.
         """
         table = self.ui.labelsTableWidget
-        # A label already in the table keeps whatever the reviewer did with it; a label that
+        # A label already in the table keeps whatever the editor did with it; a label that
         # has just appeared -- one they added and painted -- starts ticked, like the labels
         # the subject arrived with.
         previouslyChecked = self.checkedLabels() if table.rowCount else None
@@ -440,7 +447,7 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             )
 
     def checkedLabels(self):
-        """Names the reviewer vouches for, in table order."""
+        """Names the editor vouches for, in table order."""
         table = self.ui.labelsTableWidget
         names = []
         for row in range(table.rowCount):
@@ -717,7 +724,7 @@ class BoneHubQualityCheckLogic(ScriptedLoadableModuleLogic):
         return self.segmentationNode
 
     def centerViewsOnSegmentation(self):
-        """Move the slice views onto the segmentation, so the reviewer lands on the bones.
+        """Move the slice views onto the segmentation, so the editor lands on the bones.
 
         Fitting to the image alone leaves the slices wherever the volume's middle happens
         to be, which for a segmentation off to one side shows nothing at all.
@@ -749,7 +756,7 @@ class BoneHubQualityCheckLogic(ScriptedLoadableModuleLogic):
 
         A BoneHub file records a segment's label twice: as its name, and as a BoneHubValue
         tag, which the dataset's reader trusts first. In the scene the name is what the
-        reviewer sees and edits, so a segment whose tag names a label takes that label's
+        editor sees and edits, so a segment whose tag names a label takes that label's
         name, and the tags are dropped so they cannot contradict a later rename. The upload
         writes fresh tags from the names.
         """
@@ -1019,7 +1026,7 @@ class BoneHubQualityCheckTest(ScriptedLoadableModuleTest):
             self.assertFalse(segmentation.GetSegment(segmentId).HasTag(VALUE_TAG), "the name is the only record")
 
     def test_ASegmentationCanBeStartedFromScratch(self):
-        """A subject without a segmentation: the reviewer adds a label and paints it."""
+        """A subject without a segmentation: the editor adds a label and paints it."""
         self.delayDisplay("Segmenting from scratch")
         logic, volumeNode, expected = self._buildSubject(withSegmentation=False)
         self.assertEqual(logic.segmentLabelValues(), {})

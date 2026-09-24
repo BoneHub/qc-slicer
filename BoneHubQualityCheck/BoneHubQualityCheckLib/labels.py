@@ -25,7 +25,7 @@ LABEL_STATUS_VALUES: dict[int, str] = {
     2: "available, reviewed and corrected (if necessary)",
 }
 
-#: Short forms of the above. The reviewer panel is a narrow dock, so a table cell has room
+#: Short forms of the above. The module's panel is a narrow dock, so a table cell has room
 #: for a word; the full wording from :data:`LABEL_STATUS_VALUES` goes in the tooltip.
 LABEL_STATUS_SHORT: dict[int, str] = {
     0: "absent",

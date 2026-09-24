@@ -1,15 +1,19 @@
-"""The reviewer's session with the quality-check server: connection, lease, files, verdict.
+"""The editor's session with the quality-check server: connection, lease, files, verdict.
 
 Everything here is plain Python with no 3D Slicer imports, so it can be exercised outside
 the application. The scene side of a review -- volumes, segmentations, the segment editor
 -- lives in the module's logic class instead.
+
+The extension works in the editor role: it corrects segmentations and uploads them. The
+server refuses the key of an account that is not an editor, and tells a reviewer to use the
+server's review page instead.
 
 A session owns one working folder per assignment::
 
     <workspace>/<subject_key>/
         <subject_key>.nii.gz                 the image, as downloaded
         <subject_key>_segmentation.seg.nrrd  the segmentation on the server, if any
-        <subject_key>_reviewed.seg.nrrd      what the reviewer sends back
+        <subject_key>_reviewed.seg.nrrd      what the editor sends back
 """
 
 from __future__ import annotations
@@ -18,7 +22,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from .client import BoneHubQCClient, QCClientError
+from .client import EDITOR, BoneHubQCClient, QCClientError
 from .labels import SCHEMA_VERSION, LabelMap, schema_is_supported
 from .segmentation import SEGMENTATION_SUFFIX
 
@@ -27,7 +31,7 @@ DEFAULT_TIMEOUT = 300
 
 
 class BoneHubQCSession:
-    """One reviewer, one server, at most one subject in hand at a time."""
+    """One editor, one server, at most one subject in hand at a time."""
 
     def __init__(self, workspace: Path | None = None, timeout: int = DEFAULT_TIMEOUT):
         self.workspace = Path(workspace) if workspace else Path(tempfile.gettempdir()) / "BoneHubQualityCheck"
@@ -53,11 +57,12 @@ class BoneHubQCSession:
         return self.server_info.get("user", "")
 
     def connect(self, base_url: str, api_key: str) -> dict:
-        """Check the server, the key and the data schema, and fetch the label map.
+        """Check the server, the key and its editor role, and the data schema; fetch the label map.
 
-        Raises ``QCClientError`` when the server is unreachable, the key is refused, or the
-        server serves another version of the BoneHub data schema. A connection that was
-        already working is left in place, so a failed reconnect never strands a reviewer
+        Raises ``QCClientError`` when the server is unreachable, the key is refused -- also
+        when its account is not an editor, with the server's word on where to go instead --
+        or the server serves another version of the BoneHub data schema. A connection that
+        was already working is left in place, so a failed reconnect never strands an editor
         holding a subject they can no longer submit.
         """
         base_url = (base_url or "").strip()
@@ -67,7 +72,7 @@ class BoneHubQCSession:
         if not api_key:
             raise QCClientError("Enter the API key your administrator gave you.")
 
-        client = BoneHubQCClient(base_url, api_key, timeout=self.timeout)
+        client = BoneHubQCClient(base_url, api_key, timeout=self.timeout, role=EDITOR)
         info = client.ping()
         version = info.get("schema_version")
         if not schema_is_supported(version):
@@ -126,7 +131,7 @@ class BoneHubQCSession:
         return self._require_client().my_assignments()
 
     def reload_assignment(self, assignment_id: str) -> dict:
-        """Fetch the handout of a subject this reviewer already holds."""
+        """Fetch the handout of a subject this editor already holds."""
         self.clear_subject()
         self.handout = self._require_client().assignment(assignment_id)
         return self.handout
@@ -191,7 +196,7 @@ class BoneHubQCSession:
         """Send the verdict and let go of the subject.
 
         The lease is only cleared when the server accepted the submission, so a rejected
-        upload leaves the reviewer holding the subject and able to try again.
+        upload leaves the editor holding the subject and able to try again.
         """
         result = self._require_client().submit(
             self._require_assignment(),

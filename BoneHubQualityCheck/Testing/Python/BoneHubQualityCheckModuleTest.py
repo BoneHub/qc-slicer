@@ -66,7 +66,7 @@ class BoneHubQualityCheckModuleTest(ScriptedLoadableModuleTest):
 
     # ------------------------------------------------------------------ tests
     def test_PanelHasEveryWidgetTheCodeUses(self):
-        """A widget renamed in the .ui but not in the code fails here, not in a reviewer's face."""
+        """A widget renamed in the .ui but not in the code fails here, not in an editor's face."""
         self.delayDisplay("Panel widgets")
         ui = self.widget().ui
         missing = [name for name in EXPECTED_WIDGETS if not hasattr(ui, name)]
@@ -118,6 +118,6 @@ class BoneHubQualityCheckModuleTest(ScriptedLoadableModuleTest):
         widget.updateLabelsTable()
         self.assertEqual(
             widget.checkedLabels(), ["FEMUR_LEFT", "TIBIA_LEFT"],
-            "a label the reviewer added should start ticked, and the untick should hold",
+            "a label the editor added should start ticked, and the untick should hold",
         )
         self.delayDisplay("Ticks behave")
