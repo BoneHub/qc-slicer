@@ -8,7 +8,8 @@ a client–server setup for quality check of segmentations in the
 The server hands out subjects one at a time. This extension leases one, loads its
 segmentation into 3D Slicer with every segment named and coloured as its BoneHub label,
 together with its image when the server sends one, and sends the corrected segmentation
-back. Confirming replaces the segmentation in the dataset
+back. A subject sent with its image but no segmentation is segmented from scratch.
+Confirming replaces the segmentation in the dataset
 and sets the labels you vouch for in `Subject_info_XXX.json` to status `2` ("available,
 reviewed and corrected"), whatever status they had. Rejecting leaves the dataset untouched
 and is recorded only in the audit trail.
@@ -28,7 +29,7 @@ which side to update.
 
 - 3D Slicer 5.6 or newer (developed and tested against 5.12)
 - A server URL and an API key from your administrator, for an account with the editor role
-  that is sent segmentations, with or without their images (see [below](#what-the-server-sends))
+  (whatever it is sent of each subject, see [below](#what-the-server-sends))
 - A quality-check server of version 0.3 or newer (BoneHub data schema 0.3), which knows
   editors and reviewers
 
@@ -60,8 +61,9 @@ Until the extension is in the Extensions Manager, install it from source:
    and segmentation already selected. Use any of its tools. A segment's name is its
    label, so to fix a bone labelled on the wrong side, rename its segment (`FEMUR_LEFT` to
    `FEMUR_RIGHT`). To add a bone the automatic segmentation missed, pick its label in the
-   drop-down here and press *Add segment*, then paint it. Only names from that list exist
-   in BoneHub; anything else is refused.
+   drop-down here and press *Add segment*, then paint it. A subject sent without a
+   segmentation starts empty, and every bone is added this way. Only names from that list
+   exist in BoneHub; anything else is refused.
 4. **Submit** — tick the labels you vouch for. *Confirm and submit* uploads the
    segmentation and marks the ticked labels reviewed; labels left unticked keep the status
    they already have. *Reject* sends the verdict without changing anything in the dataset.
@@ -72,18 +74,24 @@ Editor does the same automatically.
 ### What the server sends
 
 The server's administrator decides, per account, whether it is sent each subject's image,
-its segmentation, or both. The segmentation is what you correct, so the extension needs
-it; the image is optional.
+its segmentation, or both. Either one is enough to work on.
 
 | The server sends | What happens |
 | --- | --- |
 | The image and the segmentation | Both are loaded. The segmentation is written back on the image's voxel grid |
 | The segmentation only | The segmentation is loaded over a blank volume on its own voxel grid, which is the image's on the server, and written back on that grid. Painting, erasing, scissors, islands, smoothing, margins and the logical operators all work. Tools that follow image intensity, such as *Threshold* or *Grow from seeds*, have nothing to follow |
-| The image only | The account is refused when connecting, since it would have nothing to correct. Ask your administrator to send it the segmentation too |
+| The image only | The image is loaded with an empty segmentation. Add each bone's label with *Add segment* and paint it; the segmentation is written back on the image's voxel grid |
 
-A subject that has no segmentation is not loaded. The review section stays locked and the
-comment is filled in for you: reject the subject, so that it is not handed to you again.
-Releasing it puts it back in the queue, and you may be given it again.
+The image only is what an account sent the image only always gets, and what any other
+account gets for a subject the dataset has no segmentation of yet. An account sent the
+image only is never sent a segmentation, even one the dataset has, and the server will not
+let it replace a segmentation it has not seen. When `Subject_info_XXX.json` lists labels of
+the subject as available, the extension warns you on loading, because a confirmation would
+be refused; reject such a subject with a comment.
+
+A subject sent neither file is not loaded. The review section stays locked and the comment
+is filled in for you: reject the subject, so that it is not handed to you again. Releasing
+it puts it back in the queue, and you may be given it again.
 
 Without the image there is only the segmentation's own grid to write back on. If the
 server reports that the stored segmentation is not on its image's grid, the extension
@@ -157,8 +165,8 @@ There are two suites, both registered as ctest targets when the extension is bui
 
 | Suite | What it covers |
 | --- | --- |
-| `BoneHubQualityCheck.py` | The label colours and label map; that an account sent images only is refused; and the round trip of a BoneHub `.seg.nrrd` through the scene: that labels, voxels and the voxel grid come back unchanged (on an oblique image), that renaming a segment relabels it, that a missing bone can be added, that a segmentation edited without its image is written back on the image's grid, that a subject is not loaded without its segmentation, that every subject starts from an empty scene, and that a segment which is not a BoneHub label is refused |
-| `Testing/Python/BoneHubQualityCheckModuleTest.py` | The panel: that the `.ui` file still carries every widget the code uses, that the sections stay locked until there is something to do, that the key stays masked, that a subject without a segmentation can only be rejected, that the Segment Editor can edit a subject without its image, and that the tick boxes behave across a refresh |
+| `BoneHubQualityCheck.py` | The label colours and label map; that an account can connect whatever it is sent of each subject; and the round trip of a BoneHub `.seg.nrrd` through the scene: that labels, voxels and the voxel grid come back unchanged (on an oblique image), that renaming a segment relabels it, that a missing bone can be added, that a segmentation edited without its image is written back on the image's grid, that a subject sent without its segmentation is painted from scratch and written back on the image's grid, that a subject sent neither file is not loaded, that every subject starts from an empty scene, and that a segment which is not a BoneHub label is refused |
+| `Testing/Python/BoneHubQualityCheckModuleTest.py` | The panel: that the `.ui` file still carries every widget the code uses, that the sections stay locked until there is something to do, that the key stays masked, that a subject without a segmentation opens for painting from scratch (with a warning for an account sent images only when the dataset has a segmentation it was not sent), that a subject sent neither file can only be rejected, that the Segment Editor can edit a subject without its image, and that the tick boxes behave across a refresh |
 
 The first also runs from **Reload and Test** in the module's *Advanced* section. Running
 either against a source checkout, with `MODULE` standing for the path to the

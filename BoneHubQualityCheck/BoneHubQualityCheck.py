@@ -3,9 +3,9 @@
 The module walks an editor through one subject at a time:
 
 1. connect to the server with the editor's API key,
-2. lease the next subject and load its segmentation, and its image if the server sends one,
-   into the scene,
-3. correct the segmentation in the Segment Editor,
+2. lease the next subject and load what the server sends of it, its image, its segmentation
+   or both, into the scene,
+3. correct the segmentation in the Segment Editor, or paint one from scratch,
 4. confirm (the corrected segmentation goes back and its labels are marked "reviewed and
    corrected", status 2) or reject (the dataset is left untouched).
 
@@ -13,10 +13,10 @@ The server gives each account the role of reviewer, editor, or both, and this mo
 an editor. An account that is a reviewer only is refused when connecting and pointed to the
 server's review page, where reviewers work.
 
-The segmentation is what an editor corrects, so it is required; the image is not. Without
-the image, the segmentation is edited and written back on its own voxel grid, which is the
-image's on the server. An account the server sends images only is refused when connecting,
-and a subject that comes without a segmentation is not loaded, only offered for rejection.
+Either file is enough to work on. Without the segmentation, the editor starts from an empty
+one on the image, adds the labels and paints them. Without the image, the segmentation is
+edited and written back on its own voxel grid, which is the image's on the server. Only a
+subject that comes with neither is not loaded, and is offered for rejection.
 
 Segmentations travel in the BoneHub dataset's own format, ``.seg.nrrd``, which 3D Slicer
 opens natively with one segment per label. In the scene a segment's name is its label, so
@@ -85,9 +85,9 @@ send the verdict back.
 <p>The key must belong to an account with the editor role. Reviewers work in the browser
 instead, on the server's review page, and the key of an account that is a reviewer only is
 refused here.
-<p>The segmentation is what you correct, so it must be sent; the image need not be. An
-account sent segmentations only edits each one on its own voxel grid, over a blank volume.
-An account sent images only is refused, since it would have nothing to correct.
+<p>A subject sent without its segmentation starts from an empty one on the image: add each
+label with <i>Add segment</i> and paint it. One sent without its image is edited on the
+segmentation's own voxel grid, over a blank volume.
 <p>Confirming uploads the reviewed segmentation, which replaces the one in the dataset, and
 sets the labels you vouch for in <code>Subject_info_XXX.json</code> to status 2, "reviewed
 and corrected". Rejecting changes nothing in the dataset and is only recorded in the audit
@@ -237,6 +237,8 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         )
         if info.get("data_access") == "segmentation":
             status += " " + _("This account is sent segmentations without their images.")
+        elif info.get("data_access") == "image":
+            status += " " + _("This account is sent images without their segmentations, so it segments from scratch.")
         self.setStatus(self.ui.connectionStatusLabel, status, ok=True)
         self.populateAddLabelComboBox()
         self.ui.subjectCollapsibleButton.collapsed = False
@@ -305,9 +307,10 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
     def downloadAndLoad(self, handout):
         """Fetch the subject's files, then build the scene from them.
 
-        The segmentation is what an editor corrects, so a subject that comes without one is
-        not loaded, and all that is left to do with it is to reject it. The image is optional:
-        without it, the segmentation is edited on its own voxel grid.
+        Either file is enough. Without the segmentation, the editor paints one from scratch
+        on the image; without the image, the segmentation is edited on its own voxel grid. A
+        subject that comes with neither is not loaded, and all that is left to do with it is
+        to reject it.
         """
         session = self.logic.session
         key = handout.get("subject_key", "")
@@ -316,15 +319,16 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.clearReview()
         self.setStatus(self.ui.submitStatusLabel, "")
 
-        if not handout.get("has_segmentation"):
-            self.ui.commentTextEdit.plainText = _("No segmentation was sent, so there was nothing to correct.")
+        if not handout.get("has_segmentation") and not handout.get("has_image"):
+            self.ui.commentTextEdit.plainText = _("Neither the image nor the segmentation was sent, so there was "
+                                                  "nothing to work on.")
             self.ui.submitCollapsibleButton.collapsed = False
             self.updateGuiFromSession()
             slicer.util.warningDisplay(
-                _("The server sent no segmentation for {key}. 3D Slicer corrects segmentations, so there is "
-                  "nothing here to work on.\n\nReject the subject, so that it is not handed to you again. "
-                  "Releasing it puts it back in the queue, and you may be given it again.").format(key=key),
-                windowTitle=_("No segmentation"),
+                _("The server sent neither the image nor the segmentation of {key}, so there is nothing here "
+                  "to work on.\n\nReject the subject, so that it is not handed to you again. Releasing it puts "
+                  "it back in the queue, and you may be given it again.").format(key=key),
+                windowTitle=_("Nothing sent"),
             )
             return
 
@@ -363,6 +367,21 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                     key=key, issue=issue
                 ),
                 windowTitle=_("Segmentation off the image's grid"),
+            )
+
+        # An account sent the image only is not sent the segmentation even when there is one,
+        # and the server will not let it replace a segmentation it has not seen. Subject_info
+        # still says which labels the dataset has, so the editor hears it before painting.
+        available = sorted(name for name, status in (handout.get("segmentation_labels") or {}).items() if status)
+        imageOnlyAccount = handout.get("data_access") == "image"
+        if segmentationPath is None and imageOnlyAccount and available and self.logic.segmentationNode is not None:
+            slicer.util.warningDisplay(
+                _("The dataset already has a segmentation of {key} ({labels}), but this account is not sent "
+                  "segmentations. The server will not let you replace a segmentation you have not seen, so it "
+                  "will refuse to confirm this subject. Reject it with a comment instead.").format(
+                    key=key, labels=", ".join(available)
+                ),
+                windowTitle=_("Segmentation not sent"),
             )
 
     def onExtendLease(self):
@@ -481,15 +500,20 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                 ),
                 ok=False,
             )
-        else:
+        elif inSegmentation:
             self.setStatus(
                 self.ui.labelsSummaryLabel,
                 _("{n} label(s) in the segmentation; ticked ones are marked 'reviewed' (status 2).").format(
                     n=len(inSegmentation)
-                )
-                if inSegmentation
-                else "",
+                ),
             )
+        elif self.logic.segmentationNode is not None:
+            self.setStatus(
+                self.ui.labelsSummaryLabel,
+                _("No segments yet. Pick a label below, press 'Add segment', and paint it in the Segment Editor."),
+            )
+        else:
+            self.setStatus(self.ui.labelsSummaryLabel, "")
 
     def checkedLabels(self):
         """Names the editor vouches for, in table order."""
@@ -694,7 +718,8 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         session = self.logic.session
         connected = session.connected
         holding = session.has_subject
-        # A subject in hand whose segmentation is not in the scene can only be rejected.
+        # A subject in hand with no segmentation in the scene, not even an empty one to paint,
+        # can only be rejected.
         loaded = holding and self.logic.segmentationNode is not None
 
         self.ui.subjectCollapsibleButton.enabled = connected
@@ -714,8 +739,10 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                 dataset=handout.get("dataset_id", ""),
                 subject=handout.get("subject_id", ""),
             )
-            if not handout.get("has_segmentation"):
-                text += "\n" + _("No segmentation was sent: nothing to correct.")
+            if not handout.get("has_segmentation") and not handout.get("has_image"):
+                text += "\n" + _("Neither the image nor the segmentation was sent: nothing to work on.")
+            elif not handout.get("has_segmentation"):
+                text += "\n" + _("Image only: no segmentation was sent, so add the labels and paint them.")
             elif not handout.get("has_image"):
                 text += "\n" + _("Segmentation only: no image was sent.")
             self.ui.subjectKeyLabel.text = text
@@ -760,18 +787,25 @@ class BoneHubQualityCheckLogic(ScriptedLoadableModuleLogic):
         self.referenceVolumeNode = None
         self.segmentationNode = None
 
-    def loadSubject(self, handout, segmentationPath, imagePath=None):
-        """Load one subject's BoneHub segmentation, one segment per label, and its image if sent.
+    def loadSubject(self, handout, segmentationPath=None, imagePath=None):
+        """Load what was sent of one subject: its BoneHub segmentation, one segment per label,
+        its image, or both.
 
-        The segmentation is what the editor corrects, so it is required. The image is not:
-        without it, the segmentation is shown, edited and written back on its own voxel grid,
-        over a blank volume standing in for the image.
+        Either is enough. Without the segmentation, an empty one is made on the image for the
+        editor to add labels to and paint. Without the image, the segmentation is shown,
+        edited and written back on its own voxel grid, over a blank volume standing in for
+        the image.
         """
         self.clearScene()
         subjectKey = handout.get("subject_key", "subject")
+        if segmentationPath is None and imagePath is None:
+            raise RuntimeError(f"Neither the image nor the segmentation of {subjectKey} was sent; nothing to load.")
 
         try:
-            self.segmentationNode = self.importSegmentation(segmentationPath, subjectKey)
+            if segmentationPath is not None:
+                self.segmentationNode = self.importSegmentation(segmentationPath, subjectKey)
+            else:
+                self.segmentationNode = self.createEmptySegmentation(f"{subjectKey}_segmentation")
             if imagePath is not None:
                 self.imageVolumeNode = slicer.util.loadVolume(str(imagePath), {"name": subjectKey, "show": False})
                 self.referenceVolumeNode = self.imageVolumeNode
@@ -834,11 +868,16 @@ class BoneHubQualityCheckLogic(ScriptedLoadableModuleLogic):
 
         The file header names each segment after its label and gives it its colour.
         """
-        if segmentationPath is None:
-            raise RuntimeError(f"{subjectKey} has no segmentation, and the segmentation is what is reviewed.")
         segmentationNode = slicer.util.loadSegmentation(str(segmentationPath), {"name": f"{subjectKey}_segmentation"})
         if segmentationNode is None:
             raise RuntimeError(f"'{segmentationPath}' could not be loaded as a segmentation.")
+        return segmentationNode
+
+    def createEmptySegmentation(self, name):
+        """A segmentation with no segments, for a subject sent without one: the editor adds
+        each label with ``addEmptySegment`` and paints it."""
+        segmentationNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode", name)
+        segmentationNode.CreateDefaultDisplayNodes()
         return segmentationNode
 
     # ------------------------------------------------------------- the labels
@@ -1023,8 +1062,8 @@ class BoneHubQualityCheckTest(ScriptedLoadableModuleTest):
 
     It exercises the parts that do not need a server: the label map, what the session
     accepts of the server, and the round trip of a segmentation through the scene -- loaded
-    from a BoneHub ``.seg.nrrd``, with or without its image, edited, and written back --
-    which is where the dataset could silently be corrupted.
+    from a BoneHub ``.seg.nrrd``, with or without its image, or painted from scratch on the
+    image, edited, and written back -- which is where the dataset could silently be corrupted.
     """
 
     #: Labels of BoneHub data schema 0.3, with their values.
@@ -1037,13 +1076,14 @@ class BoneHubQualityCheckTest(ScriptedLoadableModuleTest):
         self.setUp()
         self.test_LabelColoursFollowTheDataset()
         self.test_LabelMapReadsTheServerPayload()
-        self.test_AnAccountSentImagesOnlyIsRefused()
+        self.test_EveryAccountCanConnectWhateverItIsSent()
         self.test_SegmentationSurvivesTheRoundTrip()
         self.test_RenamingASegmentRelabelsIt()
         self.test_TagsInTheFileNameTheSegments()
         self.test_AMissingBoneCanBeAdded()
         self.test_ASegmentationIsEditedWithoutItsImage()
-        self.test_TheSegmentationIsRequired()
+        self.test_ASubjectIsSegmentedFromScratchOnItsImage()
+        self.test_ASubjectNeedsItsImageOrItsSegmentation()
         self.test_ANewSubjectStartsFromAnEmptyScene()
         self.test_UnknownSegmentsAreRefused()
 
@@ -1085,8 +1125,8 @@ class BoneHubQualityCheckTest(ScriptedLoadableModuleTest):
         self.assertFalse(schema_is_supported("0.2.0"))
         self.assertFalse(schema_is_supported(None), "servers before schema 0.3 report none")
 
-    def test_AnAccountSentImagesOnlyIsRefused(self):
-        """The segmentation is what an editor corrects; the image is optional."""
+    def test_EveryAccountCanConnectWhateverItIsSent(self):
+        """The image, the segmentation, or both: an editor can work with any of them."""
         self.delayDisplay("What the account is sent")
         from BoneHubQualityCheckLib import session as sessionModule
 
@@ -1110,17 +1150,11 @@ class BoneHubQualityCheckTest(ScriptedLoadableModuleTest):
         sessionModule.BoneHubQCClient = FakeClient
         try:
             # None stands for a server that does not say.
-            for access in ("image_and_segmentation", "segmentation", None):
+            for access in ("image_and_segmentation", "segmentation", "image", None):
                 FakeClient.dataAccess = access
                 session = BoneHubQCSession()
                 session.connect("http://server", "bhqc_key")
                 self.assertTrue(session.connected, f"an account sent '{access}' can edit")
-
-            FakeClient.dataAccess = "image"
-            session = BoneHubQCSession()
-            with self.assertRaises(QCClientError):
-                session.connect("http://server", "bhqc_key")
-            self.assertFalse(session.connected, "an account sent the image only has nothing to correct")
         finally:
             sessionModule.BoneHubQCClient = original
 
@@ -1219,13 +1253,35 @@ class BoneHubQualityCheckTest(ScriptedLoadableModuleTest):
         self._assertSameGridAsTheImage(image, self.segmentationPath)
         self.delayDisplay("Written back on the image's grid, without the image")
 
-    def test_TheSegmentationIsRequired(self):
-        """A subject is not loaded without its segmentation, even with its image, and the last one goes."""
-        self.delayDisplay("No segmentation")
+    def test_ASubjectIsSegmentedFromScratchOnItsImage(self):
+        """Sent the image only: the editor adds each label, paints it, and it goes back on the image's grid."""
+        self.delayDisplay("Segmenting from scratch")
+        logic, volumeNode, expected = self._buildSubject(withSegmentation=False)
+        self.assertIs(volumeNode, logic.imageVolumeNode, "the image is the grid")
+        self.assertIsNotNone(logic.segmentationNode, "an empty segmentation waits to be painted")
+        self.assertEqual(logic.segmentLabelValues(), {})
+        with self.assertRaises(RuntimeError):
+            logic.exportReviewedSegmentation(Path(tempfile.mkdtemp()) / f"empty{SEGMENTATION_SUFFIX}")
+
+        for name, value in (("SKULL", 100000000), ("FEMUR_LEFT", 710000001)):
+            segmentId = logic.addEmptySegment(name)
+            painted = (expected == value).astype(np.uint8)
+            slicer.util.updateSegmentBinaryLabelmapFromArray(painted, logic.segmentationNode, segmentId, volumeNode)
+
+        path = Path(tempfile.mkdtemp()) / f"reviewed{SEGMENTATION_SUFFIX}"
+        self.assertEqual(logic.exportReviewedSegmentation(path), {"SKULL": 100000000, "FEMUR_LEFT": 710000001})
+        image, values, _segments = self._readBoneHubFile(path)
+        self.assertTrue(np.array_equal(values, expected), "every voxel has the label it was painted with")
+        self._assertSameGridAsTheImage(image, self.imagePath)
+        self.delayDisplay("Painted from scratch, written on the image's grid")
+
+    def test_ASubjectNeedsItsImageOrItsSegmentation(self):
+        """A subject sent neither is not loaded, and the last subject goes all the same."""
+        self.delayDisplay("Neither image nor segmentation")
         logic, volumeNode, _expected = self._buildSubject()
         lastSegmentation = logic.segmentationNode
         with self.assertRaises(RuntimeError):
-            logic.loadSubject({"subject_key": "001_000002"}, None, self.imagePath)
+            logic.loadSubject({"subject_key": "001_000002"}, None, None)
         self.assertIsNone(logic.segmentationNode)
         self.assertIsNone(logic.referenceVolumeNode)
         self.assertIsNone(logic.imageVolumeNode)
@@ -1262,14 +1318,14 @@ class BoneHubQualityCheckTest(ScriptedLoadableModuleTest):
         self.delayDisplay("Refused, as it should be")
 
     # ---------------------------------------------------------------- helpers
-    def _buildSubject(self, withImage=True, names=None):
+    def _buildSubject(self, withImage=True, withSegmentation=True, names=None):
         """A small subject in the scene: a BoneHub segmentation of two labels, and its image.
 
         The image is oblique, so a mix-up between Slicer's RAS and the files' LPS, or of the
-        axis order, shows. It is always written, as the server keeps it, but only loaded
-        ``withImage``. ``names`` renames segments by number in the file, leaving their
-        BoneHubValue tags as they are. Returns the logic, its reference volume, and the
-        label value of each voxel.
+        axis order, shows. Both files are always written, as the server keeps them, but only
+        loaded ``withImage`` and ``withSegmentation``. ``names`` renames segments by number in
+        the file, leaving their BoneHubValue tags as they are. Returns the logic, its
+        reference volume, and the label value of each voxel.
         """
         import SimpleITK as sitk
 
@@ -1304,7 +1360,11 @@ class BoneHubQualityCheckTest(ScriptedLoadableModuleTest):
 
         logic = BoneHubQualityCheckLogic()
         logic.session.labels = LabelMap(self.LABELS)
-        logic.loadSubject({"subject_key": "001_000001"}, segmentationPath, imagePath if withImage else None)
+        logic.loadSubject(
+            {"subject_key": "001_000001"},
+            segmentationPath if withSegmentation else None,
+            imagePath if withImage else None,
+        )
         self.imagePath = imagePath
         self.segmentationPath = segmentationPath
         return logic, logic.referenceVolumeNode, expected

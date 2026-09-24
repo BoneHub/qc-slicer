@@ -3,8 +3,9 @@
 The tests in ``BoneHubQualityCheck.py`` itself cover the logic that touches the dataset.
 These cover the panel: that the .ui file still carries every widget the code reaches for,
 that the sections stay locked until there is something to do, that a subject sent without
-its segmentation can only be rejected while one sent without its image can be corrected,
-and that the tick boxes -- which decide which labels are marked "reviewed and corrected" --
+its segmentation is painted from scratch and one sent without its image is corrected, while
+one sent neither can only be rejected, and that the tick boxes -- which decide which labels
+are marked "reviewed and corrected" --
 behave across a refresh. They need a module widget, so they only run in a Slicer with a
 main window.
 """
@@ -50,7 +51,8 @@ class BoneHubQualityCheckModuleTest(ScriptedLoadableModuleTest):
         self.test_SectionsAreLockedUntilThereIsSomethingToDo()
         self.test_TheKeyIsMaskedUnlessAsked()
         self.test_LabelPickerIsInAnatomicalOrder()
-        self.test_ASubjectWithoutASegmentationCanOnlyBeRejected()
+        self.test_ASubjectWithoutASegmentationIsSegmentedFromScratch()
+        self.test_ASubjectSentNothingCanOnlyBeRejected()
         self.test_ASubjectWithoutAnImageCanBeCorrected()
         self.test_TicksSurviveARefresh()
 
@@ -64,6 +66,7 @@ class BoneHubQualityCheckModuleTest(ScriptedLoadableModuleTest):
         logic = BoneHubQualityCheck.BoneHubQualityCheckTest()
         logic.setUp()
         builtLogic, _volume, _expected = logic._buildSubject(withImage=withImage)
+        self.imagePath = logic.imagePath
         widget.logic = builtLogic
         builtLogic.session.handout = {
             "assignment_id": "a1",
@@ -109,12 +112,59 @@ class BoneHubQualityCheckModuleTest(ScriptedLoadableModuleTest):
         self.assertEqual(widget.ui.addLabelComboBox.count, 2)
         self.assertEqual(widget.ui.addLabelComboBox.itemText(0), "SKULL")
 
-    def test_ASubjectWithoutASegmentationCanOnlyBeRejected(self):
-        """There is nothing to correct, and the last subject's segmentation must not stand in for it."""
+    def test_ASubjectWithoutASegmentationIsSegmentedFromScratch(self):
+        """Sent the image only: an empty segmentation on the image, and the panel open to paint it.
+
+        An account sent images only is warned when the dataset already has a segmentation of
+        the subject, which the server will not let it replace unseen.
+        """
         self.delayDisplay("Subject without a segmentation")
         widget = self.widget()
+        logic = self.subjectInScene(widget)  # the last subject, which must not stand in for this one
+        # Only the image is downloaded for such a subject, so no server is needed.
+        logic.session.download_image = lambda: self.imagePath
+        warnings = []
+        original = slicer.util.warningDisplay
+        slicer.util.warningDisplay = lambda text, **kwargs: warnings.append(text)
+        try:
+            for access, inDataset, warned in (
+                ("image_and_segmentation", {}, False),
+                ("image", {"SKULL": 0}, False),
+                ("image", {"SKULL": 1, "FEMUR_LEFT": 0}, True),
+            ):
+                handout = {
+                    "assignment_id": "a2", "subject_key": "001_000002", "data_access": access,
+                    "has_image": True, "has_segmentation": False, "segmentation_labels": inDataset,
+                }
+                logic.session.handout = handout
+                del warnings[:]
+                widget.downloadAndLoad(handout)
+
+                self.assertIsNotNone(logic.segmentationNode)
+                self.assertEqual(logic.segmentLabelValues(), {}, "nothing of the last subject is left")
+                self.assertIs(logic.referenceVolumeNode, logic.imageVolumeNode, "painted on the image")
+                self.assertEqual(slicer.mrmlScene.GetNodesByClass("vtkMRMLSegmentationNode").GetNumberOfItems(), 1)
+                self.assertTrue(widget.ui.reviewCollapsibleButton.enabled)
+                self.assertTrue(widget.ui.confirmButton.enabled)
+                self.assertIn("Image only", widget.ui.subjectKeyLabel.text)
+                self.assertIn("Add segment", widget.ui.labelsSummaryLabel.text, "the editor is told where to start")
+                self.assertEqual(bool(warnings), warned, f"{access}, {inDataset}: {warnings}")
+                if warned:
+                    self.assertIn("SKULL", warnings[0])
+                    self.assertNotIn("FEMUR_LEFT", warnings[0], "a label at status 0 is not in the dataset")
+        finally:
+            slicer.util.warningDisplay = original
+
+        logic.addEmptySegment("FEMUR_LEFT")
+        widget.updateLabelsTable()
+        self.assertEqual(widget.checkedLabels(), ["FEMUR_LEFT"], "a label the editor added starts ticked")
+
+    def test_ASubjectSentNothingCanOnlyBeRejected(self):
+        """There is nothing to work on, and the last subject's segmentation must not stand in for it."""
+        self.delayDisplay("Subject sent without image or segmentation")
+        widget = self.widget()
         logic = self.subjectInScene(widget)
-        handout = {"assignment_id": "a2", "subject_key": "001_000002", "has_image": True, "has_segmentation": False}
+        handout = {"assignment_id": "a2", "subject_key": "001_000002", "has_image": False, "has_segmentation": False}
         logic.session.handout = handout
         # Nothing is downloaded for such a subject, so no server is needed.
         widget.downloadAndLoad(handout)
