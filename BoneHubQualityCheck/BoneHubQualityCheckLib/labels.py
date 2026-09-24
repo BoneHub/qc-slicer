@@ -6,7 +6,9 @@ the extension. This module only wraps that payload and decides how a label is sh
 
 Label values follow BoneHub data schema 0.3: nine digits built from a bone's structure,
 part, tissue and side (see ``bonehub_data_schema/labelmap.py``). A label's status in
-``Subject_info_XXX.json`` is 0, 1 or 2 (see :data:`LABEL_STATUS_VALUES`).
+``Subject_info_XXX.json`` is 0, 1 or 2 (see :data:`LABEL_STATUS_VALUES`); the server sets it
+when its administrator approves a subject. A reviewer who rejects a label gives one of the
+reasons in :data:`REJECT_REASONS`.
 """
 
 from __future__ import annotations
@@ -33,8 +35,14 @@ LABEL_STATUS_SHORT: dict[int, str] = {
     2: "reviewed",
 }
 
-#: The status a confirmed label gets.
-REVIEWED_STATUS = 2
+#: Why a reviewer rejected a label: its segmentation needs correcting, the bone should not be
+#: segmented at all, or it should be and is not. Served by the server as well; this copy is
+#: the fallback for a reason the server did not describe.
+REJECT_REASONS: dict[str, str] = {
+    "quality": "needs correction",
+    "absent": "should not be there",
+    "missing": "is missing",
+}
 
 
 def label_color(value: int) -> tuple[float, float, float]:
@@ -74,9 +82,10 @@ def schema_is_supported(version) -> bool:
 
 
 class LabelMap:
-    """The BoneHub label names and their values, as served by ``/api/v1/labels``."""
+    """The BoneHub label names and their values, the label statuses and the reasons to reject
+    a label, as served by ``/api/v1/labels``."""
 
-    def __init__(self, name_to_value: dict | None = None, statuses: dict | None = None):
+    def __init__(self, name_to_value: dict | None = None, statuses: dict | None = None, reasons: dict | None = None):
         # Background is never a segment, so it is left out even if a server sends it.
         self.name_to_value: dict[str, int] = {
             str(k): int(v) for k, v in (name_to_value or {}).items() if int(v) != 0
@@ -88,12 +97,15 @@ class LabelMap:
                 self.statuses[int(key)] = str(text)
             except (TypeError, ValueError):
                 continue
+        self.reasons: dict[str, str] = {**REJECT_REASONS, **{str(k): str(v) for k, v in (reasons or {}).items()}}
 
     @classmethod
     def from_payload(cls, payload: dict) -> "LabelMap":
         """Build from the body of ``GET /api/v1/labels``."""
         payload = payload or {}
-        return cls(payload.get("label_name_to_value"), payload.get("label_status_values"))
+        return cls(
+            payload.get("label_name_to_value"), payload.get("label_status_values"), payload.get("reject_reasons")
+        )
 
     def __bool__(self) -> bool:
         return bool(self.name_to_value)
@@ -122,6 +134,10 @@ class LabelMap:
             return self.statuses.get(int(status), str(status))
         except (TypeError, ValueError):
             return str(status)
+
+    def reason_text(self, reason) -> str:
+        """The server's own wording for a reason to reject a label: 'needs correction' for 'quality'."""
+        return self.reasons.get(str(reason), str(reason))
 
     def color_of(self, name: str) -> tuple[float, float, float]:
         value = self.name_to_value.get(name)

@@ -3,11 +3,16 @@
 The module walks an editor through one subject at a time:
 
 1. connect to the server with the editor's API key,
-2. lease the next subject and load what the server sends of it, its image, its segmentation
-   or both, into the scene,
-3. correct the segmentation in the Segment Editor, or paint one from scratch,
-4. confirm (the corrected segmentation goes back and its labels are marked "reviewed and
-   corrected", status 2) or reject (the dataset is left untouched).
+2. lease the next subject waiting for an editor -- one a reviewer sent back, with a label
+   rejected or a bone reported missing, or one without any segmentation -- and load what
+   the server sends of it, its image, its segmentation or both, into the scene,
+3. show why it came: the labels rejected and why, the bones reported missing, the
+   administrator's requests and the subject's history,
+4. correct the segmentation in the Segment Editor, or paint one from scratch,
+5. confirm, which uploads the correction, or reject, which sends the subject to the
+   administrator. Either waits on the server: the labels a correction changes go back to a
+   reviewer, unless the server takes the editor's word for them, and nothing reaches the
+   dataset before the administrator approves the subject.
 
 The server gives each account the role of reviewer, editor, or both, and this module works as
 an editor. An account that is a reviewer only is refused when connecting and pointed to the
@@ -16,7 +21,9 @@ server's review page, where reviewers work.
 Either file is enough to work on. Without the segmentation, the editor starts from an empty
 one on the image, adds the labels and paints them. Without the image, the segmentation is
 edited and written back on its own voxel grid, which is the image's on the server. Only a
-subject that comes with neither is not loaded, and is offered for rejection.
+subject that comes with neither is not loaded, and is offered for rejection. The segmentation
+sent is the one under review: an earlier editor's correction waiting on the server, or the
+dataset's own.
 
 Segmentations travel in the BoneHub dataset's own format, ``.seg.nrrd``, which 3D Slicer
 opens natively with one segment per label. In the scene a segment's name is its label, so
@@ -28,6 +35,7 @@ import json
 import logging
 import tempfile
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 
 import ctk
@@ -46,7 +54,14 @@ from slicer.ScriptedLoadableModule import (
 from slicer.util import VTKObservationMixin
 
 from BoneHubQualityCheckLib import QCClientError
-from BoneHubQualityCheckLib.labels import LABEL_STATUS_VALUES, LabelMap, label_color, schema_is_supported, status_text
+from BoneHubQualityCheckLib.labels import (
+    LABEL_STATUS_VALUES,
+    REJECT_REASONS,
+    LabelMap,
+    label_color,
+    schema_is_supported,
+    status_text,
+)
 from BoneHubQualityCheckLib.segmentation import (
     LABEL_TAG,
     SEGMENTATION_SUFFIX,
@@ -81,17 +96,28 @@ class BoneHubQualityCheck(ScriptedLoadableModule):
 Editor client for the <a href="https://github.com/BoneHub/bonehub_dataset_quality_check_server">BoneHub
 dataset quality-check server</a>. Enter the server URL and the API key your administrator
 gave you, ask for the next subject, correct its segmentation in the Segment Editor, and
-send the verdict back.
+upload the correction.
 <p>The key must belong to an account with the editor role. Reviewers work in the browser
 instead, on the server's review page, and the key of an account that is a reviewer only is
 refused here.
-<p>A subject sent without its segmentation starts from an empty one on the image: add each
-label with <i>Add segment</i> and paint it. One sent without its image is edited on the
-segmentation's own voxel grid, over a blank volume.
-<p>Confirming uploads the reviewed segmentation, which replaces the one in the dataset, and
-sets the labels you vouch for in <code>Subject_info_XXX.json</code> to status 2, "reviewed
-and corrected". Rejecting changes nothing in the dataset and is only recorded in the audit
-trail.
+<p>Reviewers judge each subject first. You are handed the subjects they send back, with a
+label rejected (it needs correction, or should not be there) or a bone reported missing, and
+the subjects that have no segmentation yet. The <i>Subject</i> section says why a subject came
+to you, with the administrator's requests and the history of its quality check, and the labels
+table marks the rejected and missing labels. A missing bone is picked for <i>Add segment</i>
+already.
+<p>The segmentation you are sent is the one under review, which may be an earlier editor's
+correction waiting on the server; the <i>Subject</i> section says so. A subject sent without a
+segmentation starts from an empty one on the image: add each label with <i>Add segment</i> and
+paint it. One sent without its image is edited on the segmentation's own voxel grid, over a
+blank volume.
+<p><i>Confirm and submit</i> uploads your correction, which waits on the server. The labels you
+changed or added, and those a reviewer rejected, go back to a reviewer, unless the server
+takes your word for them: then the ones you tick are accepted. Connecting says which. The
+labels you left alone keep their verdicts. Nothing reaches the dataset before the
+administrator approves the subject.
+<p><i>Reject</i> is for a subject you cannot correct: it goes to the administrator with your
+comment, and nothing in the dataset changes.
 <p>A segment's name is its BoneHub label: rename a segment to relabel it.
 <p>Each subject is loaded into an empty scene. The scene is closed when you leave a subject,
 so anything else you loaded into it goes as well.
@@ -127,24 +153,38 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.logic = BoneHubQualityCheckLogic()
 
         self.ui.workspacePathLineEdit.filters = ctk.ctkPathLineEdit.Dirs | ctk.ctkPathLineEdit.Writable
-        # The panel is a narrow dock, so only the label column is allowed to grow; the
-        # other three are kept to their contents and explained by their tooltips.
-        self.ui.labelsTableWidget.setHorizontalHeaderLabels(
-            [_("Label"), _("Value"), _("Dataset"), _("Painted")]
-        )
-        header = self.ui.labelsTableWidget.horizontalHeader()
-        header.setSectionResizeMode(0, qt.QHeaderView.Stretch)
-        for column in range(1, 4):
+        # The panel is a narrow dock. The label names are kept whole, and the quality check
+        # takes the room that is left, wrapping onto as many lines as it needs there: rows are
+        # fitted to it again whenever the columns change width.
+        table = self.ui.labelsTableWidget
+        table.setHorizontalHeaderLabels([_("Label"), _("Quality check"), _("Dataset"), _("Painted")])
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(0, qt.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, qt.QHeaderView.Stretch)
+        for column in (2, 3):
             header.setSectionResizeMode(column, qt.QHeaderView.ResizeToContents)
+        table.wordWrap = True
+        # Fitted once the columns have settled: while a section is being resized, the header
+        # still reports its old width. The timer belongs to the table, so it goes with it.
+        rowFit = qt.QTimer(table)
+        rowFit.setSingleShot(True)
+        rowFit.setInterval(0)
+        rowFit.timeout.connect(table.resizeRowsToContents)
+        header.sectionResized.connect(lambda *args: rowFit.start())
         for column, tip in enumerate(
             (
                 _("BoneHub label name. A segment's name is its label."),
-                _("The label's BoneLabelMap value, which the segmentation file's header records."),
-                _("The label's status in Subject_info today: 0 not available, 1 not reviewed, 2 reviewed."),
-                _("Whether this label has a segment in the segmentation you are reviewing."),
+                _("What the quality check has made of the label so far, and who said so: rejected, because it "
+                  "needs correction or should not be there; missing; accepted; to review; kept, as the dataset has "
+                  "it reviewed already; or removed."),
+                _("The label's status in Subject_info today: 0 not available, 1 not reviewed, 2 reviewed. It "
+                  "changes only when the administrator approves the subject."),
+                _("Whether this label has a segment in the segmentation you are correcting."),
             )
         ):
             self.ui.labelsTableWidget.horizontalHeaderItem(column).setToolTip(tip)
+        # Lists in the narrow Subject section, indented by a little rather than by Qt's 40 pixels.
+        self.ui.caseTextBrowser.document.setIndentWidth(14)
 
         # Connections
         self.ui.connectButton.clicked.connect(self.onConnect)
@@ -158,6 +198,7 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.ui.releaseSubjectButton.clicked.connect(self.onReleaseSubject)
 
         self.ui.refreshLabelsButton.clicked.connect(self.updateLabelsTable)
+        self.ui.labelsTableWidget.cellClicked.connect(self.onLabelCellClicked)
         self.ui.selectAllLabelsButton.clicked.connect(lambda: self.setAllLabelsChecked(True))
         self.ui.selectNoLabelsButton.clicked.connect(lambda: self.setAllLabelsChecked(False))
         self.ui.addSegmentButton.clicked.connect(self.onAddSegment)
@@ -239,6 +280,10 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             status += " " + _("This account is sent segmentations without their images.")
         elif info.get("data_access") == "image":
             status += " " + _("This account is sent images without their segmentations, so it segments from scratch.")
+        if session.edits_need_review:
+            status += " " + _("The labels you correct go back to a reviewer.")
+        else:
+            status += " " + _("The labels you correct and tick are accepted on your word, without another review.")
         self.setStatus(self.ui.connectionStatusLabel, status, ok=True)
         self.populateAddLabelComboBox()
         self.ui.subjectCollapsibleButton.collapsed = False
@@ -257,8 +302,10 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         except QCClientError as error:
             if error.status_code == 404:
                 slicer.util.infoDisplay(
-                    _("There is no subject left for you to review.\n\n{detail}").format(detail=str(error)),
-                    windowTitle=_("Queue empty"),
+                    _("There is nothing for you to correct right now.\n\nA subject comes to the editors when a "
+                      "reviewer rejects one of its labels or reports a bone missing, or when it has no "
+                      "segmentation yet. Try again later.\n\n{detail}").format(detail=str(error)),
+                    windowTitle=_("Nothing to correct"),
                 )
             else:
                 slicer.util.errorDisplay(str(error), windowTitle=_("Could not lease a subject"))
@@ -277,9 +324,10 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             slicer.util.errorDisplay(str(error), windowTitle=_("Could not list your subjects"))
             return
         if not assignments:
-            slicer.util.infoDisplay(
-                _("You are not holding any subject. Use 'Get next subject'."), windowTitle=_("Nothing in hand")
-            )
+            text = _("You are not holding any subject to correct. Use 'Get next subject'.")
+            if "reviewer" in (session.server_info.get("roles") or []):
+                text += "\n\n" + _("Subjects you hold as a reviewer, on the review page, are not listed here.")
+            slicer.util.infoDisplay(text, windowTitle=_("Nothing in hand"))
             return
 
         assignment = assignments[0]
@@ -310,7 +358,7 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         Either file is enough. Without the segmentation, the editor paints one from scratch
         on the image; without the image, the segmentation is edited on its own voxel grid. A
         subject that comes with neither is not loaded, and all that is left to do with it is
-        to reject it.
+        to reject it, which sends it to the administrator.
         """
         session = self.logic.session
         key = handout.get("subject_key", "")
@@ -326,8 +374,10 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             self.updateGuiFromSession()
             slicer.util.warningDisplay(
                 _("The server sent neither the image nor the segmentation of {key}, so there is nothing here "
-                  "to work on.\n\nReject the subject, so that it is not handed to you again. Releasing it puts "
-                  "it back in the queue, and you may be given it again.").format(key=key),
+                  "to work on.\n\nReject the subject: that sends it to the administrator, with the comment filled "
+                  "in for you. Releasing it puts it back in the queue, and you may be given it again.").format(
+                    key=key
+                ),
                 windowTitle=_("Nothing sent"),
             )
             return
@@ -355,32 +405,30 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.ui.reviewCollapsibleButton.collapsed = False
         self.ui.submitCollapsibleButton.collapsed = False
         self.updateGuiFromSession()
+        self.pickNextMissingLabel()
 
         # With the image, the upload is written on the image's grid whatever grid the stored
         # segmentation is on. Without it, the segmentation's own grid is all there is.
         issue = handout.get("stored_segmentation_issue")
         if imagePath is None and issue and self.logic.segmentationNode is not None:
             slicer.util.warningDisplay(
-                _("The server reports a problem with the stored segmentation of {key}:\n\n{issue}\n\nWithout "
-                  "the image, 3D Slicer can only write the segmentation back on its own voxel grid, so the "
-                  "server will refuse to confirm it. Reject the subject with a comment instead.").format(
-                    key=key, issue=issue
-                ),
+                _("The server reports a problem with the segmentation of {key}:\n\n{issue}\n\nWithout the "
+                  "image, 3D Slicer can only write the segmentation back on its own voxel grid, so the server "
+                  "will refuse your upload. Reject the subject with a comment instead, which sends it to the "
+                  "administrator.").format(key=key, issue=issue),
                 windowTitle=_("Segmentation off the image's grid"),
             )
 
-        # An account sent the image only is not sent the segmentation even when there is one,
-        # and the server will not let it replace a segmentation it has not seen. Subject_info
-        # still says which labels the dataset has, so the editor hears it before painting.
-        available = sorted(name for name, status in (handout.get("segmentation_labels") or {}).items() if status)
-        imageOnlyAccount = handout.get("data_access") == "image"
-        if segmentationPath is None and imageOnlyAccount and available and self.logic.segmentationNode is not None:
+        # An account sent the image only is not sent the segmentation even when the server has
+        # one, and the server will not let it replace a segmentation it has not seen. The
+        # handout still says where the segmentation under review comes from, so the editor
+        # hears it before painting.
+        if segmentationPath is None and handout.get("segmentation_source") and self.logic.segmentationNode is not None:
             slicer.util.warningDisplay(
-                _("The dataset already has a segmentation of {key} ({labels}), but this account is not sent "
-                  "segmentations. The server will not let you replace a segmentation you have not seen, so it "
-                  "will refuse to confirm this subject. Reject it with a comment instead.").format(
-                    key=key, labels=", ".join(available)
-                ),
+                _("The server has a segmentation of {key}, but this account is not sent segmentations. The "
+                  "server will not let you replace a segmentation you have not seen, so it will refuse your "
+                  "upload. Reject the subject with a comment instead, which sends it to the "
+                  "administrator.").format(key=key),
                 windowTitle=_("Segmentation not sent"),
             )
 
@@ -393,9 +441,8 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
 
     def onReleaseSubject(self):
         if not slicer.util.confirmYesNoDisplay(
-            _("Return {key} to the queue without judging it? Your corrections are lost.").format(
-                key=self.logic.session.subject_key
-            ),
+            _("Give {key} back without uploading anything? Your corrections are lost, and the subject goes "
+              "back to the queue for an editor.").format(key=self.logic.session.subject_key),
             windowTitle=_("Release subject"),
         ):
             return
@@ -404,7 +451,7 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         except QCClientError as error:
             slicer.util.errorDisplay(str(error), windowTitle=_("Could not release the subject"))
             return
-        self.finishSubject(_("Subject released. It is back in the queue."), ok=True)
+        self.finishSubject(_("Subject released. It is back in the queue, waiting for an editor."), ok=True)
 
     def confirmDiscardingCurrentSubject(self):
         """Warn before walking away from a subject that is still leased."""
@@ -412,7 +459,7 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         if not session.has_subject:
             return True
         return slicer.util.confirmYesNoDisplay(
-            _("You are still holding {key}, and your corrections to it have not been submitted. "
+            _("You are still holding {key}, and your corrections to it have not been uploaded. "
               "They will be discarded. The subject stays leased to you, and if you are already "
               "at your limit the server will simply hand {key} back. Continue?").format(
                 key=session.subject_key
@@ -438,21 +485,27 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             self.ui.addLabelComboBox.addItem(name)
 
     def updateLabelsTable(self):
-        """Show every label of this subject: what the dataset says, and what is in the scene.
+        """Show every label of this subject: what the quality check has made of it, what the
+        dataset says, and what is in the scene.
 
-        Ticks the editor already made are kept, so refreshing after an edit in the
-        Segment Editor does not undo their choices.
+        The labels a reviewer rejected or reported missing stand out. A label in the
+        segmentation has a tick box only when a tick counts, which is when the server takes
+        an editor's word for a correction. Ticks the editor already made are kept, so
+        refreshing after an edit in the Segment Editor does not undo their choices.
         """
         table = self.ui.labelsTableWidget
+        session = self.logic.session
+        ticks = not session.edits_need_review
         # A label already in the table keeps whatever the editor did with it; a label that
         # has just appeared -- one they added and painted -- starts ticked, like the labels
         # the subject arrived with.
         previouslyChecked = self.checkedLabels() if table.rowCount else None
         previouslyListed = self._checkableLabels() if table.rowCount else set()
 
-        session = self.logic.session
         inSegmentation = self.logic.segmentLabelValues()
         inDataset = dict(session.handout.get("segmentation_labels") or {})
+        inCase = _caseLabels(session.handout)
+        darkTheme = table.palette.color(qt.QPalette.Base).lightness() < 128
 
         def sortKey(name):
             value = inSegmentation.get(name)
@@ -460,28 +513,29 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                 value = session.labels.value_of(name)
             return (value is None, value or 0, name)
 
-        names = sorted(set(inDataset) | set(inSegmentation), key=sortKey)
+        names = sorted(set(inDataset) | set(inCase) | set(inSegmentation), key=sortKey)
         table.setRowCount(len(names))
         for row, name in enumerate(names):
             present = name in inSegmentation
             value = inSegmentation.get(name) if present else session.labels.value_of(name)
 
             item = qt.QTableWidgetItem(name)
-            if present:
+            if present and ticks:
                 item.setFlags(qt.Qt.ItemIsUserCheckable | qt.Qt.ItemIsEnabled | qt.Qt.ItemIsSelectable)
                 known = previouslyChecked is not None and name in previouslyListed
                 ticked = name in previouslyChecked if known else True
                 item.setCheckState(qt.Qt.Checked if ticked else qt.Qt.Unchecked)
-                item.setToolTip(name)  # the column is too narrow for the longer names
             else:
                 item.setFlags(qt.Qt.ItemIsEnabled)
-                item.setToolTip(_("{name}: not in the segmentation, so there is nothing to confirm.").format(name=name))
+            item.setToolTip(_labelTip(name, value, present, ticks))
             if value is not None:
-                red, green, blue = label_color(value)
-                item.setForeground(qt.QBrush(qt.QColor.fromRgbF(red * 0.6, green * 0.6, blue * 0.6)))
+                item.setForeground(qt.QBrush(_labelTextColour(value, darkTheme)))
             table.setItem(row, 0, item)
 
-            table.setItem(row, 1, _readOnlyItem("?" if value is None else str(value)))
+            text, tip, flag = _labelState(inCase.get(name), session.labels, present)
+            stateItem = _readOnlyItem(text)
+            stateItem.setToolTip(tip)
+            table.setItem(row, 1, stateItem)
             if name in inDataset:
                 datasetItem = _readOnlyItem(status_text(inDataset[name]))
                 datasetItem.setToolTip(session.labels.describe(inDataset[name]))
@@ -491,7 +545,20 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             table.setItem(row, 2, datasetItem)
             table.setItem(row, 3, _readOnlyItem(_("yes") if present else _("no")))
 
+            if flag:
+                # What a reviewer sent back is what the editor is here for: the row is tinted,
+                # translucent so that it reads over a light and a dark theme alike.
+                font = stateItem.font()
+                font.setBold(True)
+                stateItem.setFont(font)
+                tint = qt.QBrush(qt.QColor(*_FLAG_COLOURS[flag], 70))
+                for column in range(table.columnCount):
+                    table.item(row, column).setBackground(tint)
+        table.resizeRowsToContents()
+
         unknown = sorted(name for name, value in inSegmentation.items() if value is None)
+        toAdd = [name for name in _missingLabels(session.handout) if name not in inSegmentation]
+        unwanted = [name for name in _rejectedLabels(session.handout, "absent") if name in inSegmentation]
         if unknown:
             self.setStatus(
                 self.ui.labelsSummaryLabel,
@@ -500,23 +567,28 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                 ),
                 ok=False,
             )
-        elif inSegmentation:
-            self.setStatus(
-                self.ui.labelsSummaryLabel,
-                _("{n} label(s) in the segmentation; ticked ones are marked 'reviewed' (status 2).").format(
-                    n=len(inSegmentation)
-                ),
-            )
-        elif self.logic.segmentationNode is not None:
-            self.setStatus(
-                self.ui.labelsSummaryLabel,
-                _("No segments yet. Pick a label below, press 'Add segment', and paint it in the Segment Editor."),
-            )
-        else:
+        elif self.logic.segmentationNode is None:
             self.setStatus(self.ui.labelsSummaryLabel, "")
+        else:
+            if inSegmentation:
+                parts = [_("{n} label(s) in your segmentation.").format(n=len(inSegmentation))]
+            else:
+                parts = [_("No segments yet. Pick a label below, press 'Add segment', and paint it in the "
+                           "Segment Editor.")]
+            if toAdd:
+                parts.append(_("Reported missing, still to add: {names}.").format(names=", ".join(toAdd)))
+            if unwanted:
+                parts.append(_("A reviewer says these should not be there: {names}.").format(names=", ".join(unwanted)))
+            if inSegmentation and ticks:
+                parts.append(_("Of the labels you change or add, and those a reviewer rejected, the ticked ones "
+                               "are accepted on your word; the others go back to a reviewer."))
+            elif inSegmentation:
+                parts.append(_("The labels you change or add, and those a reviewer rejected, go back to a "
+                               "reviewer."))
+            self.setStatus(self.ui.labelsSummaryLabel, " ".join(parts))
 
     def checkedLabels(self):
-        """Names the editor vouches for, in table order."""
+        """Names the editor vouches for, in table order: none, when ticks do not count."""
         table = self.ui.labelsTableWidget
         names = []
         for row in range(table.rowCount):
@@ -542,6 +614,27 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             if item is not None and int(item.flags()) & int(qt.Qt.ItemIsUserCheckable):
                 item.setCheckState(qt.Qt.Checked if checked else qt.Qt.Unchecked)
 
+    def onLabelCellClicked(self, row, column):
+        """A click on a label the segmentation lacks -- a bone reported missing, say -- picks
+        it for 'Add segment'."""
+        item = self.ui.labelsTableWidget.item(row, 0)
+        if item is not None and item.text() not in self.logic.segmentLabelValues():
+            self.pickLabelToAdd(item.text())
+
+    def pickLabelToAdd(self, name):
+        """Make ``name`` the label 'Add segment' adds, if it is a BoneHub label."""
+        index = self.ui.addLabelComboBox.findText(name)
+        if index >= 0:
+            self.ui.addLabelComboBox.setCurrentIndex(index)
+
+    def pickNextMissingLabel(self):
+        """Pick the first bone reported missing that the segmentation still lacks for 'Add
+        segment', so that adding it takes one press."""
+        painted = self.logic.segmentLabelValues()
+        toAdd = [name for name in _missingLabels(self.logic.session.handout) if name not in painted]
+        if toAdd:
+            self.pickLabelToAdd(toAdd[0])
+
     def onAddSegment(self):
         name = self.ui.addLabelComboBox.currentText.strip()
         try:
@@ -550,6 +643,7 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             slicer.util.errorDisplay(str(error), windowTitle=_("Could not add the segment"))
             return
         self.updateLabelsTable()
+        self.pickNextMissingLabel()
 
     def onOpenSegmentEditor(self):
         try:
@@ -560,81 +654,120 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
     # ---------------------------------------------------------------- verdict
     def onConfirm(self):
         session = self.logic.session
-        # Read the scene again first: the verdict must be about the segments that are there
+        # Read the scene again first: the upload must be about the segments that are there
         # now, not about a row for a segment deleted in the Segment Editor meanwhile.
         self.updateLabelsTable()
-        confirmed = self.checkedLabels()
-        if not confirmed:
-            slicer.util.errorDisplay(
-                _("Tick at least one label you vouch for, or reject the subject instead."),
-                windowTitle=_("Nothing to confirm"),
-            )
-            return
+        vouched = self.checkedLabels()
 
         try:
             slicer.app.setOverrideCursor(qt.Qt.WaitCursor)
             written = self.logic.exportReviewedSegmentation(session.reviewed_path())
         except Exception as error:
-            slicer.util.errorDisplay(str(error), windowTitle=_("Could not write the reviewed segmentation"))
+            slicer.util.errorDisplay(str(error), windowTitle=_("Could not write your correction"))
             return
         finally:
             slicer.app.restoreOverrideCursor()
 
-        missing = [name for name in confirmed if name not in written]
-        if missing:
+        empty = [name for name in vouched if name not in written]
+        if empty:
             slicer.util.errorDisplay(
                 _("These labels are ticked but have no voxels in the segmentation -- empty, or "
-                  "covered entirely by an overlapping segment -- so they cannot be confirmed: "
-                  "{names}").format(names=", ".join(missing)),
+                  "covered entirely by an overlapping segment -- so you cannot vouch for them: "
+                  "{names}").format(names=", ".join(empty)),
                 windowTitle=_("Empty labels"),
             )
             return
 
-        extra = [name for name in written if name not in confirmed]
-        message = _("Confirm {key}?\n\n{n} label(s) will be marked 'reviewed and corrected' (status 2) "
-                    "and the uploaded segmentation will replace the one in the dataset.").format(
-            key=session.subject_key, n=len(confirmed)
-        )
-        if extra:
-            message += _("\n\nAlso in the segmentation but not ticked, so left as they are: {names}.").format(
-                names=", ".join(extra)
-            )
-        if not slicer.util.confirmYesNoDisplay(message, windowTitle=_("Confirm subject")):
+        if not slicer.util.confirmYesNoDisplay(self.uploadQuestion(written, vouched), windowTitle=_("Upload correction")):
             return
 
         path = session.reviewed_path()
         comment = self.ui.commentTextEdit.plainText
 
+        # With no tick boxes, nothing is vouched for: should the server start taking an
+        # editor's word meanwhile, the correction still goes to a reviewer.
         def upload():
-            return session.submit(True, segmentation_path=path, confirmed_labels=confirmed, comment=comment)
+            return session.submit(True, segmentation_path=path, confirmed_labels=vouched, comment=comment)
 
         try:
-            result = self.runWithProgress(_("Uploading the reviewed segmentation..."), upload)
+            result = self.runWithProgress(_("Uploading your correction..."), upload)
         except QCClientError as error:
             slicer.util.errorDisplay(
-                _("The server refused the submission, so you are still holding the subject:\n\n{detail}").format(
+                _("The server refused the upload, so you are still holding the subject:\n\n{detail}").format(
                     detail=str(error)
                 ),
-                windowTitle=_("Submission refused"),
+                windowTitle=_("Upload refused"),
             )
             return
 
-        self.finishSubject(result.get("message", _("Confirmed.")), ok=True, result=result)
+        self.finishSubject(_submissionSummary(result), ok=True, result=result)
+
+    def uploadQuestion(self, written, vouched):
+        """What uploading ``written``, vouching for ``vouched``, will do, asked before it is done.
+
+        The server compares the upload with the segmentation it replaces, voxel by voxel, so
+        only it knows which labels were changed. What can be told here -- the labels taken
+        out, the missing bones still not there, the bones that should not be there and still
+        are -- is spelt out, since the reviewers asked for them.
+        """
+        session = self.logic.session
+        handout = session.handout
+        labels = sorted(handout.get("labels") or [], key=_anatomicalOrder)
+        removed = [label["name"] for label in labels if label.get("painted") and label["name"] not in written]
+        absent = _rejectedLabels(handout, "absent")
+        asked = [name for name in removed if name in absent]
+        unasked = [name for name in removed if name not in absent]
+        notAdded = [name for name in _missingLabels(handout) if name not in written]
+        unwanted = [name for name in absent if name in written]
+        inCase = _caseLabels(handout)
+        empty = [name for name in self.logic.segmentLabelValues() if name not in written and name not in inCase]
+
+        paragraphs = [
+            _("Upload your correction of {key}?").format(key=session.subject_key),
+            _("It waits on the server: nothing reaches the dataset before the administrator approves the subject."),
+        ]
+        if session.edits_need_review:
+            paragraphs.append(_("The labels you changed or added, and those a reviewer rejected, go back to a "
+                                "reviewer. The labels you left alone keep their verdicts."))
+            if asked:
+                paragraphs.append(_("Taken out, as a reviewer asked: {names}.").format(names=", ".join(asked)))
+            if unasked:
+                paragraphs.append(_("Taken out, although nobody asked: {names}. A reviewer must agree before "
+                                    "they are removed.").format(names=", ".join(unasked)))
+            if notAdded:
+                paragraphs.append(_("Reported missing, and not in your upload: {names}. A reviewer will see that "
+                                    "you left them out.").format(names=", ".join(notAdded)))
+        else:
+            paragraphs.append(_("Of the labels you changed or added, and those a reviewer rejected, the ticked "
+                                "ones are accepted on your word and the others go back to a reviewer. The labels "
+                                "you left alone keep their verdicts, ticked or not."))
+            paragraphs.append(_("Ticked: {names}.").format(names=", ".join(vouched) or _("none")))
+            if removed:
+                paragraphs.append(_("Taken out: {names}.").format(names=", ".join(removed)))
+            if notAdded:
+                paragraphs.append(_("Reported missing, and not in your upload: {names}. They stay out of the "
+                                    "segmentation.").format(names=", ".join(notAdded)))
+        if unwanted:
+            paragraphs.append(_("A reviewer said these should not be there, and they are still in: {names}.").format(
+                names=", ".join(unwanted)
+            ))
+        if empty:
+            paragraphs.append(_("Empty, so left out of the upload: {names}.").format(names=", ".join(empty)))
+        return "\n\n".join(paragraphs)
 
     def onReject(self):
         session = self.logic.session
         comment = self.ui.commentTextEdit.plainText.strip()
         if not comment and not slicer.util.confirmYesNoDisplay(
-            _("Reject {key} without saying what is wrong with it? A comment is what makes the "
-              "audit trail useful.").format(key=session.subject_key),
+            _("Send {key} to the administrator without a comment? The comment is what tells them why you "
+              "could not correct it.").format(key=session.subject_key),
             windowTitle=_("No comment"),
         ):
             self.ui.commentTextEdit.setFocus()
             return
         if not slicer.util.confirmYesNoDisplay(
-            _("Reject {key}? Nothing in the dataset is changed; only the audit trail records it.").format(
-                key=session.subject_key
-            ),
+            _("Reject {key}? It goes to the administrator with your comment, and they decide what becomes of "
+              "it. Nothing in the dataset changes.").format(key=session.subject_key),
             windowTitle=_("Reject subject"),
         ):
             return
@@ -643,12 +776,12 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             return session.submit(False, comment=comment)
 
         try:
-            result = self.runWithProgress(_("Sending the rejection..."), upload)
+            result = self.runWithProgress(_("Sending the subject to the administrator..."), upload)
         except QCClientError as error:
-            slicer.util.errorDisplay(str(error), windowTitle=_("Submission refused"))
+            slicer.util.errorDisplay(str(error), windowTitle=_("Rejection refused"))
             return
 
-        self.finishSubject(result.get("message", _("Rejected.")), ok=True, result=result)
+        self.finishSubject(_submissionSummary(result), ok=True, result=result)
 
     def finishSubject(self, message, ok=True, result=None):
         """Common tail of submitting, rejecting and releasing."""
@@ -731,6 +864,22 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.ui.extendLeaseButton.enabled = holding
         self.ui.releaseSubjectButton.enabled = holding
         self.ui.connectButton.text = _("Reconnect") if connected else _("Connect")
+        # Ticks count only when the server takes an editor's word for a correction.
+        ticks = not session.edits_need_review
+        self.ui.selectAllLabelsButton.visible = ticks
+        self.ui.selectNoLabelsButton.visible = ticks
+        if ticks:
+            self.ui.confirmButton.toolTip = _(
+                "Upload your corrected segmentation. It waits on the server: of the labels you changed or added, "
+                "and those a reviewer rejected, the ticked ones are accepted and the others go back to a reviewer. "
+                "Nothing reaches the dataset before the administrator approves the subject."
+            )
+        else:
+            self.ui.confirmButton.toolTip = _(
+                "Upload your corrected segmentation. It waits on the server: the labels you changed or added, and "
+                "those a reviewer rejected, go back to a reviewer. Nothing reaches the dataset before the "
+                "administrator approves the subject."
+            )
 
         if holding:
             handout = session.handout
@@ -746,11 +895,13 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             elif not handout.get("has_image"):
                 text += "\n" + _("Segmentation only: no image was sent.")
             self.ui.subjectKeyLabel.text = text
-            self.ui.expiresLabel.text = _("Lease expires at {when}").format(when=handout.get("expires_at", "?"))
+            self.ui.expiresLabel.text = _("Lease expires at {when}").format(when=_when(handout.get("expires_at", "?")))
+            self.ui.caseTextBrowser.html = _caseHtml(handout, session.labels, session.user_name)
             self.ui.subjectInfoTextBrowser.html = _subjectInfoHtml(handout)
         else:
             self.ui.subjectKeyLabel.text = _("No subject in hand.")
             self.ui.expiresLabel.text = ""
+            self.ui.caseTextBrowser.html = ""
             self.ui.subjectInfoTextBrowser.html = ""
 
         self.updateLabelsTable()
@@ -1025,6 +1176,271 @@ def _readOnlyItem(text):
     return item
 
 
+#: How the labels a reviewer sent back stand out: rejected ones in red, missing ones in amber.
+#: The labels table tints their rows, translucent; the Subject section writes them in colour.
+_FLAG_COLOURS = {"rejected": (178, 34, 34), "missing": (180, 83, 9)}
+
+
+def _labelTextColour(value, darkTheme):
+    """A label's colour, made readable as text: darkened on a light theme, lightened on a dark one."""
+    red, green, blue = label_color(value)
+    if darkTheme:
+        return qt.QColor.fromRgbF(0.45 + red * 0.55, 0.45 + green * 0.55, 0.45 + blue * 0.55)
+    return qt.QColor.fromRgbF(red * 0.6, green * 0.6, blue * 0.6)
+
+
+def _caseLabels(handout):
+    """``{name: label}`` of the subject's labels, each with what the quality check has made of it."""
+    return {label["name"]: label for label in handout.get("labels") or []}
+
+
+def _anatomicalOrder(label):
+    value = label.get("value")
+    return (value is None, value or 0, label["name"])
+
+
+def _rejectedLabels(handout, reason=None):
+    """The labels a reviewer rejected that the segmentation paints, in anatomical order; with
+    ``reason``, only those rejected for it."""
+    labels = [
+        label
+        for label in handout.get("labels") or []
+        if label.get("state") == "rejected" and label.get("painted") and reason in (None, label.get("reason"))
+    ]
+    return [label["name"] for label in sorted(labels, key=_anatomicalOrder)]
+
+
+def _missingLabels(handout):
+    """The bones a reviewer reported missing -- rejected, and not in the segmentation -- in
+    anatomical order."""
+    labels = [
+        label for label in handout.get("labels") or [] if label.get("state") == "rejected" and not label.get("painted")
+    ]
+    return [label["name"] for label in sorted(labels, key=_anatomicalOrder)]
+
+
+def _labelTip(name, value, present, ticks):
+    """The tooltip of a label's name in the labels table."""
+    if value is None:
+        if present:
+            return _("{name}: not a BoneHub label, so the upload would be refused. Rename or delete it.").format(
+                name=name
+            )
+        return _("{name}: not a BoneHub label.").format(name=name)
+    tip = _("{name}, BoneLabelMap value {value}.").format(name=name, value=value)
+    if not present:
+        return tip + " " + _("Not in your segmentation: click it to pick it for 'Add segment'.")
+    if ticks:
+        return tip + " " + _("Tick it to vouch for it: if you changed or added it, or a reviewer rejected it, it "
+                             "is accepted on your word.")
+    return tip
+
+
+def _labelState(label, labels, present):
+    """What the quality check has made of a label: a few words for the labels table, a sentence
+    for their tooltip, and "rejected" or "missing" when a reviewer sent the label back, so that
+    its row stands out.
+
+    ``label`` is the label as the handout gives it, None for one the quality check does not
+    know of; ``labels`` the label map, which words the reasons to reject a label; ``present``
+    whether the editor's segmentation paints the label now.
+    """
+    if label is None:
+        if present:
+            return _("added"), _("Not in the segmentation you were sent: you added it. Uploaded, it counts as "
+                                 "corrected."), None
+        return "", _("Not part of this subject's quality check."), None
+
+    state, by, editor = label.get("state"), label.get("by"), label.get("edited_by")
+    who = " ({by})".format(by=by) if by else ""
+    reviewer = by or _("a reviewer")
+    if state == "rejected" and not label.get("painted"):
+        tip = _("Reported missing by {by}: the bone should be segmented, and is not.").format(by=reviewer)
+        tip += " " + (_("You have added it.") if present else _("Add it with 'Add segment', and paint it."))
+        return _("missing") + who, tip, "missing"
+    if state == "rejected":
+        reason = labels.reason_text(label.get("reason"))
+        tip = _("Rejected by {by}: {reason}.").format(by=reviewer, reason=reason)
+        if not present:
+            tip += " " + _("You took it out of the segmentation.")
+        elif label.get("reason") == "absent":
+            tip += " " + _("Delete its segment, unless you disagree.")
+        else:
+            tip += " " + _("Correct it in the Segment Editor.")
+        return _("rejected: {reason}").format(reason=reason) + who, tip, "rejected"
+    if state == "accepted":
+        tip = _("Accepted by {by}.").format(by=reviewer)
+        if editor:
+            tip += " " + _("Corrected by {editor}.").format(editor=editor)
+        return _("accepted") + who, tip + " " + _("It keeps that verdict unless you change it."), None
+    if state == "pending" and not label.get("painted"):
+        return (
+            _("to review: removed by {editor}").format(editor=editor or _("an editor")),
+            _("{editor} took it out of the segmentation, and a reviewer has yet to agree. Add it back if the bone "
+              "should be segmented.").format(editor=editor or _("An editor")),
+            None,
+        )
+    if state == "pending":
+        if editor:
+            return _("to review"), _("Waits for a reviewer: {editor} corrected it.").format(editor=editor), None
+        return _("to review"), _("Waits for a reviewer: nobody has reviewed it yet."), None
+    if state == "kept":
+        return _("kept"), _("Not under review: the dataset has it as reviewed already. If you change it, it counts "
+                            "as corrected."), None
+    if state == "removed":
+        return _("removed") + who, _("Not in the segmentation, and nobody needs to look at it again. Add it if the "
+                                     "bone should be segmented."), None
+    return str(state), "", None
+
+
+def _when(timestamp):
+    """A server timestamp (UTC, ISO 8601) in local time, to the minute; the text as it is when
+    it is not one."""
+    try:
+        moment = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+    except ValueError:
+        return str(timestamp)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone().strftime("%Y-%m-%d %H:%M")
+
+
+def _requestText(request):
+    """An open request for an editor about no single label: the administrator's, or a
+    reviewer's rejection of the subject as a whole."""
+    if request.get("role") == "admin":
+        text = _("The administrator sent it back to the editors")
+    else:
+        text = _("{by} rejected the subject as a whole").format(by=request.get("by") or _("A reviewer"))
+    comment = request.get("comment")
+    return text + (': "{comment}"'.format(comment=comment) if comment else ".")
+
+
+def _eventWho(event):
+    """Who took a step of the quality check, and in what role."""
+    if event.get("role") == "admin":
+        return _("the administrator")
+    return "{by} ({role})".format(by=event.get("by", "?"), role=event.get("role", "?"))
+
+
+def _eventText(event, labels):
+    """What one step of a subject's quality check did, in words."""
+    details = event.get("details") or {}
+    action = event.get("action")
+    if action == "review":
+        parts = []
+        if details.get("accepted"):
+            parts.append(_("accepted {names}").format(names=", ".join(details["accepted"])))
+        rejected = [
+            "{name} ({reason})".format(name=name, reason=labels.reason_text(reason))
+            for name, reason in (details.get("rejected") or {}).items()
+            if reason != "missing"
+        ]
+        if rejected:
+            parts.append(_("rejected {names}").format(names=", ".join(rejected)))
+        if details.get("missing"):
+            parts.append(_("reported missing {names}").format(names=", ".join(details["missing"])))
+        return "; ".join(parts) or _("reviewed it")
+    if action == "edit":
+        parts = []
+        if details.get("edited"):
+            parts.append(_("corrected {names}").format(names=", ".join(details["edited"])))
+        if details.get("removed"):
+            parts.append(_("removed {names}").format(names=", ".join(details["removed"])))
+        return "; ".join(parts) or _("uploaded the segmentation unchanged")
+    if action == "escalate":
+        return _("sent it to the administrator")
+    if action == "return":
+        return _("sent it back to the editors") if details.get("to") == "edit" else _("sent it back to the reviewers")
+    if action == "approve":
+        return _("approved it")
+    if action == "close":
+        return _("closed it")
+    return str(action)
+
+
+def _stagedNote(handout, user):
+    """Where the segmentation under review comes from, when it is not the dataset's own: an
+    earlier editor's correction, waiting on the server. Empty otherwise."""
+    if handout.get("segmentation_source") != "staged":
+        return ""
+    edits = [event for event in handout.get("history") or [] if event.get("action") == "edit"]
+    if not edits:
+        text = _("The segmentation is an earlier editor's correction.")
+    elif edits[-1].get("by") == user:
+        text = _("The segmentation is your own earlier correction, of {when}.").format(when=_when(edits[-1].get("at")))
+    else:
+        text = _("The segmentation is {editor}'s correction, of {when}.").format(
+            editor=edits[-1].get("by"), when=_when(edits[-1].get("at"))
+        )
+    return text + " " + _("It waits on the server and is not in the dataset yet: the dataset keeps its own "
+                          "segmentation until the administrator approves the subject.")
+
+
+def _caseHtml(handout, labels, user):
+    """Why the subject came to the editor, where the segmentation they were sent comes from,
+    and the subject's quality check so far with its comments, as HTML for the Subject section."""
+    caseLabels = _caseLabels(handout)
+    why = []
+    for name in _rejectedLabels(handout):
+        label = caseLabels[name]
+        why.append(("rejected", _("{name}, rejected by {by}: {reason}.").format(
+            name="<b>{}</b>".format(_escape(name)),
+            by=_escape(label.get("by") or _("a reviewer")),
+            reason=_escape(labels.reason_text(label.get("reason"))),
+        )))
+    for name in _missingLabels(handout):
+        why.append(("missing", _("{name}, reported missing by {by}.").format(
+            name="<b>{}</b>".format(_escape(name)), by=_escape(caseLabels[name].get("by") or _("a reviewer"))
+        )))
+    for request in handout.get("requests") or []:
+        why.append((None, _escape(_requestText(request))))
+    if not handout.get("segmentation_source"):
+        why.append((None, _escape(_("It has no segmentation yet: add each bone with 'Add segment', and paint it."))))
+
+    parts = []
+    if why:
+        parts.append("<p><b>{}</b></p>".format(_escape(_("Why it came to you"))))
+        parts.append("<ul>{}</ul>".format("".join("<li>{}</li>".format(_coloured(flag, text)) for flag, text in why)))
+    note = _stagedNote(handout, user)
+    if note:
+        parts.append("<p><i>{}</i></p>".format(_escape(note)))
+    history = handout.get("history") or []
+    if history:
+        parts.append("<p><b>{}</b></p>".format(_escape(_("History"))))
+        steps = []
+        for event in history:
+            step = _escape("{when}, {who}: {what}".format(
+                when=_when(event.get("at")), who=_eventWho(event), what=_eventText(event, labels)
+            ))
+            if event.get("comment"):
+                step += '<br><i>"{}"</i>'.format(_escape(event["comment"]))
+            steps.append("<li>{}</li>".format(step))
+        parts.append("<ul>{}</ul>".format("".join(steps)))
+    return "".join(parts)
+
+
+def _coloured(flag, html):
+    """``html`` in the colour of a label a reviewer sent back, or as it is."""
+    if flag not in _FLAG_COLOURS:
+        return html
+    return "<span style='color: #{:02x}{:02x}{:02x}'>{}</span>".format(*_FLAG_COLOURS[flag], html)
+
+
+def _submissionSummary(result):
+    """The server's word on a verdict, followed by the labels it names."""
+    lines = [result.get("message") or ""]
+    for key, text in (
+        ("edited_labels", _("Changed or added: {names}.")),
+        ("accepted_labels", _("Accepted on your word: {names}.")),
+        ("removed_labels", _("Taken out: {names}.")),
+        ("pending_labels", _("Waiting for a reviewer: {names}.")),
+    ):
+        if result.get(key):
+            lines.append(text.format(names=", ".join(result[key])))
+    return " ".join(line for line in lines if line)
+
+
 def _toBool(value):
     """QSettings hands back strings on some platforms and bools on others."""
     if isinstance(value, str):
@@ -1061,13 +1477,44 @@ class BoneHubQualityCheckTest(ScriptedLoadableModuleTest):
     """Self-test, runnable from the Reload and Test section and from ctest.
 
     It exercises the parts that do not need a server: the label map, what the session
-    accepts of the server, and the round trip of a segmentation through the scene -- loaded
-    from a BoneHub ``.seg.nrrd``, with or without its image, or painted from scratch on the
-    image, edited, and written back -- which is where the dataset could silently be corrupted.
+    accepts of the server, how the quality check of a subject is put into words, and the round
+    trip of a segmentation through the scene -- loaded from a BoneHub ``.seg.nrrd``, with or
+    without its image, or painted from scratch on the image, edited, and written back --
+    which is where the dataset could silently be corrupted.
     """
 
     #: Labels of BoneHub data schema 0.3, with their values.
     LABELS = {"SKULL": 100000000, "FEMUR_LEFT": 710000001, "FEMUR_RIGHT": 710000002}
+
+    #: What a quality-check server of version 0.4 answers an editor's ``GET /api/v1/ping``.
+    PING = {
+        "status": "ok",
+        "server": "bonehub-dataset-quality-check-server",
+        "server_version": "0.4.0",
+        "schema_version": "0.3.0",
+        "user": "eddie",
+        "role": "editor",
+        "roles": ["editor"],
+        "allowed_dataset_ids": None,
+        "data_access": "image_and_segmentation",
+        "edits_need_review": True,
+        "mark_removed_labels_absent": True,
+        "lease_ttl_seconds": 86400,
+        "max_concurrent_assignments": 1,
+    }
+
+    #: ... and its ``GET /api/v1/labels``, with the labels of :data:`LABELS`.
+    LABELS_PAYLOAD = {
+        "schema_version": "0.3.0",
+        "label_name_to_value": dict(LABELS),
+        "label_status_values": {
+            "0": "not available",
+            "1": "available, not reviewed or corrected",
+            "2": "available, reviewed and corrected (if necessary)",
+        },
+        "reject_reasons": {"quality": "needs correction", "absent": "should not be there", "missing": "is missing"},
+        "segmentation_suffix": ".seg.nrrd",
+    }
 
     def setUp(self):
         slicer.mrmlScene.Clear()
@@ -1077,6 +1524,8 @@ class BoneHubQualityCheckTest(ScriptedLoadableModuleTest):
         self.test_LabelColoursFollowTheDataset()
         self.test_LabelMapReadsTheServerPayload()
         self.test_EveryAccountCanConnectWhateverItIsSent()
+        self.test_OnlyAServerOfVersion04IsAccepted()
+        self.test_TheQualityCheckIsPutIntoWords()
         self.test_SegmentationSurvivesTheRoundTrip()
         self.test_RenamingASegmentRelabelsIt()
         self.test_TagsInTheFileNameTheSegments()
@@ -1107,6 +1556,7 @@ class BoneHubQualityCheckTest(ScriptedLoadableModuleTest):
                 "schema_version": "0.3.0",
                 "label_name_to_value": {"FEMUR_LEFT": 710000001, "SKULL": 100000000, "BACKGROUND": 0},
                 "label_status_values": {"1": "not reviewed yet", "2": "reviewed"},
+                "reject_reasons": {"quality": "needs correcting"},
             }
         )
         self.assertEqual(labelMap.value_of("FEMUR_LEFT"), 710000001)
@@ -1120,6 +1570,10 @@ class BoneHubQualityCheckTest(ScriptedLoadableModuleTest):
         self.assertIn("not reviewed", status_text(1, short=False))
         self.assertEqual(labelMap.describe(1), "not reviewed yet")
         self.assertEqual(labelMap.describe(0), LABEL_STATUS_VALUES[0])
+        # The server words the reasons to reject a label; a reason it leaves out keeps the usual words.
+        self.assertEqual(labelMap.reason_text("quality"), "needs correcting")
+        self.assertEqual(labelMap.reason_text("absent"), REJECT_REASONS["absent"])
+        self.assertEqual(labelMap.reason_text("unheard_of"), "unheard_of")
         # A server of another schema would hand out masks this extension cannot read.
         self.assertTrue(schema_is_supported("0.3.0"))
         self.assertFalse(schema_is_supported("0.2.0"))
@@ -1128,35 +1582,110 @@ class BoneHubQualityCheckTest(ScriptedLoadableModuleTest):
     def test_EveryAccountCanConnectWhateverItIsSent(self):
         """The image, the segmentation, or both: an editor can work with any of them."""
         self.delayDisplay("What the account is sent")
-        from BoneHubQualityCheckLib import session as sessionModule
+        for access in ("image_and_segmentation", "segmentation", "image"):
+            session = self._connect(data_access=access)
+            self.assertTrue(session.connected, f"an account sent '{access}' can edit")
+            self.assertEqual(session.labels.value_of("FEMUR_LEFT"), 710000001)
+            self.assertEqual(session.labels.reason_text("absent"), "should not be there")
 
-        labels = dict(self.LABELS)
+    def test_OnlyAServerOfVersion04IsAccepted(self):
+        """The panel promises that a correction waits on the server until the administrator
+        approves it, and that the labels it corrects go back to a reviewer or are accepted as
+        the server says. Only a server of version 0.4 keeps those promises."""
+        self.delayDisplay("Server version")
+        for version in ("0.4.0", "0.4.3"):
+            self.assertTrue(self._connect(server_version=version).connected, version)
+        for version in (None, "0.3.0", "0.5.0"):
+            with self.assertRaises(QCClientError, msg=f"version {version}") as context:
+                self._connect(server_version=version)
+            self.assertIn("0.4", str(context.exception), "the editor is told which version it takes")
 
-        class FakeClient:
-            """Answers as a schema 0.3 server does, for an account of ``dataAccess``."""
+        self.assertTrue(self._connect(edits_need_review=True).edits_need_review)
+        self.assertFalse(self._connect(edits_need_review=False).edits_need_review)
+        self.assertTrue(BoneHubQCSession().edits_need_review, "until the server says, corrections are reviewed")
 
-            dataAccess = None
+    def test_TheQualityCheckIsPutIntoWords(self):
+        """What the handout says of each label, of the requests and of the history, as the
+        editor reads it in the panel."""
+        self.delayDisplay("The quality check in words")
+        labels = LabelMap.from_payload(self.LABELS_PAYLOAD)
 
-            def __init__(self, *args, **kwargs):
-                self.timeout = kwargs.get("timeout")
+        def describe(present=True, **label):
+            return _labelState(label, labels, present)
 
-            def ping(self):
-                return {"user": "editor", "schema_version": "0.3.0", "data_access": FakeClient.dataAccess}
+        # A label a reviewer sent back stands out, with the reason and the reviewer.
+        self.assertEqual(
+            describe(state="rejected", painted=True, reason="quality", by="rita"),
+            ("rejected: needs correction (rita)", "Rejected by rita: needs correction. Correct it in the Segment Editor.",
+             "rejected"),
+        )
+        text, tip, flag = describe(state="rejected", painted=True, reason="absent", by="rita")
+        self.assertEqual((text, flag), ("rejected: should not be there (rita)", "rejected"))
+        self.assertIn("Delete its segment", tip)
+        text, tip, flag = describe(present=False, state="rejected", painted=False, reason="missing", by="rita")
+        self.assertEqual((text, flag), ("missing (rita)", "missing"))
+        self.assertIn("Add segment", tip)
+        self.assertIn("You have added it", describe(state="rejected", painted=False, reason="missing", by="rita")[1])
+        # The others do not.
+        for label, present, wanted in (
+            ({"state": "accepted", "painted": True, "by": "rita"}, True, "accepted (rita)"),
+            ({"state": "pending", "painted": True}, True, "to review"),
+            ({"state": "pending", "painted": True, "edited_by": "eddie"}, True, "to review"),
+            ({"state": "pending", "painted": False, "edited_by": "eddie"}, False, "to review: removed by eddie"),
+            ({"state": "kept", "painted": True}, True, "kept"),
+            ({"state": "removed", "painted": False}, False, "removed"),
+            ({"state": "removed", "painted": False, "by": "rita"}, False, "removed (rita)"),
+        ):
+            text, _tip, flag = _labelState(label, labels, present)
+            self.assertEqual((text, flag), (wanted, None), label)
+        self.assertEqual(_labelState(None, labels, True)[0], "added", "a label the editor added")
 
-            def labels(self):
-                return {"schema_version": "0.3.0", "label_name_to_value": labels}
+        # The history, step by step.
+        review = {
+            "action": "review", "by": "rita", "role": "reviewer",
+            "details": {"accepted": ["SKULL"], "rejected": {"FEMUR_LEFT": "quality", "FEMUR_RIGHT": "missing"},
+                        "missing": ["FEMUR_RIGHT"]},
+        }
+        self.assertEqual(
+            _eventText(review, labels), "accepted SKULL; rejected FEMUR_LEFT (needs correction); reported missing FEMUR_RIGHT"
+        )
+        self.assertEqual(_eventWho(review), "rita (reviewer)")
+        edit = {"action": "edit", "by": "eddie", "role": "editor", "details": {"edited": ["FEMUR_LEFT"], "removed": ["SKULL"]}}
+        self.assertEqual(_eventText(edit, labels), "corrected FEMUR_LEFT; removed SKULL")
+        self.assertEqual(_eventText({"action": "edit", "details": {}}, labels), "uploaded the segmentation unchanged")
+        back = {"action": "return", "by": "admin", "role": "admin", "details": {"to": "edit"}}
+        self.assertEqual((_eventWho(back), _eventText(back, labels)), ("the administrator", "sent it back to the editors"))
+        self.assertEqual(_eventText({"action": "escalate"}, labels), "sent it to the administrator")
 
-        original = sessionModule.BoneHubQCClient
-        sessionModule.BoneHubQCClient = FakeClient
-        try:
-            # None stands for a server that does not say.
-            for access in ("image_and_segmentation", "segmentation", "image", None):
-                FakeClient.dataAccess = access
-                session = BoneHubQCSession()
-                session.connect("http://server", "bhqc_key")
-                self.assertTrue(session.connected, f"an account sent '{access}' can edit")
-        finally:
-            sessionModule.BoneHubQCClient = original
+        # Requests about no single label.
+        self.assertEqual(
+            _requestText({"by": "admin", "role": "admin", "comment": "Check the knee too."}),
+            'The administrator sent it back to the editors: "Check the knee too."',
+        )
+        self.assertEqual(_requestText({"by": "rita", "role": "reviewer"}), "rita rejected the subject as a whole.")
+
+        # Server timestamps are UTC; the panel shows them in local time.
+        local = datetime(2026, 9, 24, 14, 3, 5, tzinfo=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M")
+        self.assertEqual(_when("2026-09-24T14:03:05Z"), local)
+        self.assertEqual(_when("?"), "?")
+
+        # An earlier editor's correction is not the dataset's own segmentation.
+        handout = {"segmentation_source": "staged", "history": [dict(edit, at="2026-09-24T14:03:05Z")]}
+        self.assertIn("eddie's correction", _stagedNote(handout, "carol"))
+        self.assertIn("your own earlier correction", _stagedNote(handout, "eddie"))
+        self.assertEqual(_stagedNote(dict(handout, segmentation_source="dataset"), "carol"), "")
+
+        # What the server did with an upload, with the labels it names.
+        summary = _submissionSummary({
+            "stage": "review", "message": "Uploaded. 1 label(s) go to a reviewer.",
+            "edited_labels": ["FEMUR_LEFT"], "accepted_labels": [], "removed_labels": ["SKULL"],
+            "pending_labels": ["FEMUR_LEFT"],
+        })
+        self.assertEqual(
+            summary,
+            "Uploaded. 1 label(s) go to a reviewer. Changed or added: FEMUR_LEFT. Taken out: SKULL. "
+            "Waiting for a reviewer: FEMUR_LEFT.",
+        )
 
     def test_SegmentationSurvivesTheRoundTrip(self):
         """Loaded from a BoneHub file and written back: same labels, voxels and voxel grid."""
@@ -1318,6 +1847,33 @@ class BoneHubQualityCheckTest(ScriptedLoadableModuleTest):
         self.delayDisplay("Refused, as it should be")
 
     # ---------------------------------------------------------------- helpers
+    def _connect(self, **ping):
+        """A session connected to a fake server, which answers ``/ping`` with :data:`PING`
+        changed by ``ping``, and ``/labels`` with :data:`LABELS_PAYLOAD`."""
+        from BoneHubQualityCheckLib import session as sessionModule
+
+        pingPayload = {**self.PING, **ping}
+        labelsPayload = dict(self.LABELS_PAYLOAD)
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                self.timeout = kwargs.get("timeout")
+
+            def ping(self):
+                return dict(pingPayload)
+
+            def labels(self):
+                return dict(labelsPayload)
+
+        original = sessionModule.BoneHubQCClient
+        sessionModule.BoneHubQCClient = FakeClient
+        try:
+            session = BoneHubQCSession()
+            session.connect("http://server", "bhqc_key")
+        finally:
+            sessionModule.BoneHubQCClient = original
+        return session
+
     def _buildSubject(self, withImage=True, withSegmentation=True, names=None):
         """A small subject in the scene: a BoneHub segmentation of two labels, and its image.
 

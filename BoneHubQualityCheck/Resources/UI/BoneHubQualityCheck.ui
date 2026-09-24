@@ -132,7 +132,7 @@
         <item>
          <widget class="QPushButton" name="nextSubjectButton">
           <property name="toolTip">
-           <string>Lease the next subject from the queue and load it into the scene.</string>
+           <string>Lease the next subject waiting for an editor and load it into the scene.</string>
           </property>
           <property name="text">
            <string>Get next subject</string>
@@ -169,6 +169,28 @@
        </widget>
       </item>
       <item>
+       <widget class="QTextBrowser" name="caseTextBrowser">
+        <property name="toolTip">
+         <string>Why this subject came to you: the labels a reviewer rejected or reported missing, the administrator's requests, and the subject's quality check so far, with its comments.</string>
+        </property>
+        <property name="minimumSize">
+         <size>
+          <width>0</width>
+          <height>220</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>16777215</width>
+          <height>320</height>
+         </size>
+        </property>
+        <property name="placeholderText">
+         <string>Once you hold a subject: why it came to you, and its history.</string>
+        </property>
+       </widget>
+      </item>
+      <item>
        <widget class="QTextBrowser" name="subjectInfoTextBrowser">
         <property name="toolTip">
          <string>The subject's entry in Subject_info_XXX.json, without the per-label dictionaries.</string>
@@ -196,7 +218,7 @@
         <item>
          <widget class="QPushButton" name="releaseSubjectButton">
           <property name="toolTip">
-           <string>Give the subject back to the queue without judging it. Your corrections are lost.</string>
+           <string>Give the subject back to the queue without uploading anything. Your corrections are lost.</string>
           </property>
           <property name="text">
            <string>Release subject</string>
@@ -214,7 +236,7 @@
       <bool>false</bool>
      </property>
      <property name="text">
-      <string>Review</string>
+      <string>Correction</string>
      </property>
      <layout class="QVBoxLayout" name="reviewLayout">
       <item>
@@ -230,7 +252,7 @@
       <item>
        <widget class="QTableWidget" name="labelsTableWidget">
         <property name="toolTip">
-         <string>Tick every label you vouch for. Ticked labels are marked "reviewed and corrected" (status 2) in Subject_info; the others keep the status they have. A segment's name is its label: rename a segment to relabel it.</string>
+         <string>Every label of this subject: what the quality check has made of it so far, its status in Subject_info, and whether your segmentation paints it. A segment's name is its label: rename a segment to relabel it.</string>
         </property>
         <property name="alternatingRowColors">
          <bool>true</bool>
@@ -254,7 +276,7 @@
         </column>
         <column>
          <property name="text">
-          <string>Value</string>
+          <string>Quality check</string>
          </property>
         </column>
         <column>
@@ -312,7 +334,7 @@
         <item>
          <widget class="QComboBox" name="addLabelComboBox">
           <property name="toolTip">
-           <string>A BoneHub label to add as an empty segment. Type to search; only names from this list are accepted by the server.</string>
+           <string>A BoneHub label to add as an empty segment. A bone reported missing is picked here for you, and so is a row you click in the table above. Type to search; only names from this list are accepted by the server.</string>
           </property>
           <property name="editable">
            <bool>true</bool>
@@ -352,7 +374,7 @@
       <item>
        <widget class="QLabel" name="commentLabel">
         <property name="text">
-         <string>Comment (kept in the audit trail):</string>
+         <string>Comment (kept in the subject's history):</string>
         </property>
        </widget>
       </item>
@@ -365,7 +387,7 @@
          </size>
         </property>
         <property name="placeholderText">
-         <string>What you changed, or what is wrong with this subject.</string>
+         <string>What you changed, or why you cannot correct this subject.</string>
         </property>
        </widget>
       </item>
@@ -374,7 +396,7 @@
         <item>
          <widget class="QPushButton" name="confirmButton">
           <property name="toolTip">
-           <string>Upload the reviewed segmentation, replacing the one in the dataset, and mark the ticked labels "reviewed and corrected" (status 2).</string>
+           <string>Upload your corrected segmentation. It waits on the server, and nothing reaches the dataset before the administrator approves the subject.</string>
           </property>
           <property name="text">
            <string>Confirm and submit</string>
@@ -384,7 +406,7 @@
         <item>
          <widget class="QPushButton" name="rejectButton">
           <property name="toolTip">
-           <string>Record that this subject is not good enough. Nothing in the dataset is changed.</string>
+           <string>Send the subject to the administrator, with your comment, when you cannot correct it. Nothing in the dataset changes.</string>
           </property>
           <property name="text">
            <string>Reject</string>
@@ -437,7 +459,7 @@
         <item row="0" column="1">
          <widget class="ctkPathLineEdit" name="workspacePathLineEdit">
           <property name="toolTip">
-           <string>Where downloaded images and segmentations are kept while they are being reviewed.</string>
+           <string>Where downloaded images and segmentations are kept while you correct them.</string>
           </property>
          </widget>
         </item>

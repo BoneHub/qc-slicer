@@ -9,10 +9,16 @@ server refuses the key of an account that is not an editor, and tells a reviewer
 server's review page instead. Whatever the account is sent of each subject -- the image, the
 segmentation, or both -- is enough to work on.
 
+Reviewers judge each subject first. An editor is handed the subjects a reviewer sent back --
+a label rejected, or a bone reported missing -- and those without any segmentation. The
+upload waits on the server: the labels it corrects go back to a reviewer, or are accepted on
+the editor's word when the server takes it (``edits_need_review`` off), and nothing reaches
+the dataset before the server's administrator approves the subject.
+
 A session owns one working folder per assignment::
 
     <workspace>/<subject_key>/
-        <subject_key>_segmentation.seg.nrrd  the segmentation on the server, if it sends it
+        <subject_key>_segmentation.seg.nrrd  the segmentation under review, if the server sends it
         <subject_key>.nii.gz                 the image, if the server sends it
         <subject_key>_reviewed.seg.nrrd      what the editor sends back
 """
@@ -29,6 +35,15 @@ from .segmentation import SEGMENTATION_SUFFIX
 
 #: Downloads and the upload share one timeout; a whole-body CT over a slow link is slow.
 DEFAULT_TIMEOUT = 300
+
+#: The quality-check server this extension is written for, as major.minor: the version whose
+#: API it speaks, and whose stages a subject goes through.
+SERVER_VERSION = "0.4"
+
+
+def server_is_supported(version) -> bool:
+    """True if a server's version has the major.minor this extension is written for."""
+    return isinstance(version, str) and version.split(".")[:2] == SERVER_VERSION.split(".")
 
 
 class BoneHubQCSession:
@@ -57,14 +72,21 @@ class BoneHubQCSession:
     def user_name(self) -> str:
         return self.server_info.get("user", "")
 
+    @property
+    def edits_need_review(self) -> bool:
+        """Whether the labels an editor corrects go back to a reviewer, as the server said on
+        connecting. When they do not, the corrected labels the editor vouches for are accepted.
+        The safe answer, True, until the server says otherwise."""
+        return bool(self.server_info.get("edits_need_review", True))
+
     def connect(self, base_url: str, api_key: str) -> dict:
         """Check the server, the key and its editor role, and the data schema; fetch the label map.
 
         Raises ``QCClientError`` when the server is unreachable, the key is refused -- also
         when its account is not an editor, with the server's word on where to go instead --
-        or the server serves another version of the BoneHub data schema. What the account is
-        sent of each subject does not matter: an editor sent the image only segments from
-        scratch. A connection that was already working is left in
+        or the server is of another version, or serves another version of the BoneHub data
+        schema. What the account is sent of each subject does not matter: an editor sent the
+        image only segments from scratch. A connection that was already working is left in
         place, so a failed reconnect never strands an editor holding a subject they can no
         longer submit.
         """
@@ -77,6 +99,13 @@ class BoneHubQCSession:
 
         client = BoneHubQCClient(base_url, api_key, timeout=self.timeout, role=EDITOR)
         info = client.ping()
+        server = info.get("server_version")
+        if not server_is_supported(server):
+            raise QCClientError(
+                f"The quality-check server is version {server or 'older than 0.4'}, but this extension is written "
+                f"for version {SERVER_VERSION}, where a correction waits on the server until the administrator "
+                "approves it. Update whichever of the two is older."
+            )
         version = info.get("schema_version")
         if not schema_is_supported(version):
             raise QCClientError(
@@ -125,12 +154,14 @@ class BoneHubQCSession:
         self.segmentation_path = None
 
     def next_subject(self) -> dict:
-        """Lease the next subject and remember the handout. Raises 404 on an empty queue."""
+        """Lease the next subject waiting for an editor and remember the handout. Raises 404
+        when no subject waits for one."""
         self.clear_subject()
         self.handout = self._require_client().next_subject()
         return self.handout
 
     def open_assignments(self) -> list:
+        """The subjects this user holds as an editor; those they hold as a reviewer are not listed."""
         return self._require_client().my_assignments()
 
     def reload_assignment(self, assignment_id: str) -> dict:
@@ -171,7 +202,8 @@ class BoneHubQCSession:
         return self.image_path
 
     def download_segmentation(self):
-        """Download the stored segmentation, or return None when the subject has none."""
+        """Download the segmentation under review -- an earlier editor's correction waiting on
+        the server, or the dataset's own -- or return None when none is sent."""
         if not self.handout.get("has_segmentation"):
             self.segmentation_path = None
             return None
@@ -199,7 +231,10 @@ class BoneHubQCSession:
     ) -> dict:
         """Send the verdict and let go of the subject.
 
-        The lease is only cleared when the server accepted the submission, so a rejected
+        Confirmed, the corrected segmentation is uploaded, vouching for ``confirmed_labels``;
+        rejected, the subject goes to the administrator with the comment. Either waits on the
+        server: nothing reaches the dataset before the administrator approves the subject.
+        The lease is only cleared when the server accepted the submission, so a refused
         upload leaves the editor holding the subject and able to try again.
         """
         result = self._require_client().submit(

@@ -1,4 +1,4 @@
-"""Writing the reviewed segmentation in BoneHub's segmentation format (``.seg.nrrd``).
+"""Writing the corrected segmentation in BoneHub's segmentation format (``.seg.nrrd``).
 
 The format is the one ``bonehub_data_schema/segmentation_file.py`` defines, and the one the
 dataset's own files are in: voxels hold per-file segment numbers (1, 2, 3 ...; uint8, or
