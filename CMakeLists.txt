@@ -1,14 +1,14 @@
 cmake_minimum_required(VERSION 3.28.0...3.28.0 FATAL_ERROR)
 
-project(BoneHubDatasetQualityCheck)
+project(BoneHubQualityCheck)
 
 #-----------------------------------------------------------------------------
 # Extension meta-information
-set(EXTENSION_HOMEPAGE "https://github.com/BoneHub/bonehub_dataset_quality_check_3dslicer_extension")
+set(EXTENSION_HOMEPAGE "https://github.com/BoneHub/qc-slicer")
 set(EXTENSION_CATEGORY "Segmentation")
 set(EXTENSION_CONTRIBUTORS "Hamid Alavi (University of Twente)")
-set(EXTENSION_DESCRIPTION "Editor client for the BoneHub dataset quality-check server. Leases one subject at a time, loads its image and segmentation for correcting, and sends the corrected segmentation back.")
-set(EXTENSION_ICONURL "https://raw.githubusercontent.com/BoneHub/bonehub_dataset_quality_check_3dslicer_extension/main/BoneHubDatasetQualityCheck.png")
+set(EXTENSION_DESCRIPTION "Editor client for the BoneHub quality-check server. Leases one subject at a time, loads its image and segmentation for correcting, and sends the corrected segmentation back.")
+set(EXTENSION_ICONURL "https://raw.githubusercontent.com/BoneHub/qc-slicer/main/BoneHubQualityCheck.png")
 set(EXTENSION_SCREENSHOTURLS "")
 set(EXTENSION_DEPENDS "NA") # Specified as a list or "NA" if no dependencies
 

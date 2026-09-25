@@ -1,6 +1,5 @@
-# Vendored verbatim from bonehub_dataset_quality_check_server
-# (bonehub_quality_check_server/client.py). Do not edit here: change it in the server
-# repository and copy the file across, so both sides stay on the same API.
+# Vendored verbatim from qc-server (qc_server/client.py). Do not edit here: change it in
+# the server repository and copy the file across, so both sides stay on the same API.
 """A reference client for the quality-check server, written against the standard library only.
 
 This module deliberately avoids ``requests`` and every other third-party package: the same

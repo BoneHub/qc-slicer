@@ -1,4 +1,4 @@
-"""Editor client for the BoneHub dataset quality-check server.
+"""Editor client for the BoneHub quality-check server.
 
 The module walks an editor through one subject at a time:
 
@@ -93,8 +93,8 @@ class BoneHubQualityCheck(ScriptedLoadableModule):
         self.parent.dependencies = ["Segmentations", "SegmentEditor"]
         self.parent.contributors = ["Hamid Alavi (University of Twente)"]
         self.parent.helpText = _("""
-Editor client for the <a href="https://github.com/BoneHub/bonehub_dataset_quality_check_server">BoneHub
-dataset quality-check server</a>. Enter the server URL and the API key your administrator
+Editor client for the <a href="https://github.com/BoneHub/qc-server">BoneHub
+quality-check server</a>. Enter the server URL and the API key your administrator
 gave you, ask for the next subject, correct its segmentation in the Segment Editor, and
 upload the correction.
 <p>The key must belong to an account with the editor role. Reviewers work in the browser
@@ -1489,7 +1489,7 @@ class BoneHubQualityCheckTest(ScriptedLoadableModuleTest):
     #: What a quality-check server of version 0.4 answers an editor's ``GET /api/v1/ping``.
     PING = {
         "status": "ok",
-        "server": "bonehub-dataset-quality-check-server",
+        "server": "qc-server",
         "server_version": "0.4.0",
         "schema_version": "0.3.0",
         "user": "eddie",
