@@ -250,6 +250,16 @@
        </widget>
       </item>
       <item>
+       <widget class="QCheckBox" name="show3DCheckBox">
+        <property name="toolTip">
+         <string>Build 3D models of the segmentation the server sent, one per label, and show them in the 3D view. They follow your corrections, which slows the Segment Editor on a large segmentation; untick this to take them away. A segmentation you paint from scratch can be shown with the Segment Editor's Show 3D button.</string>
+        </property>
+        <property name="text">
+         <string>Show the segmentation in 3D</string>
+        </property>
+       </widget>
+      </item>
+      <item>
        <widget class="QTableWidget" name="labelsTableWidget">
         <property name="toolTip">
          <string>Every label of this subject: what the quality check has made of it so far, its status in Subject_info, and whether your segmentation paints it. A segment's name is its label: rename a segment to relabel it.</string>

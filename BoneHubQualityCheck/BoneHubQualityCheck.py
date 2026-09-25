@@ -119,6 +119,10 @@ administrator approves the subject.
 <p><i>Reject</i> is for a subject you cannot correct: it goes to the administrator with your
 comment, and nothing in the dataset changes.
 <p>A segment's name is its BoneHub label: rename a segment to relabel it.
+<p><i>Show the segmentation in 3D</i> builds 3D models of the segmentation the server sent, one per
+label, and shows them in the 3D view. The tick is remembered for the subjects that follow. The
+models follow your corrections, which slows the Segment Editor on a large segmentation: untick it
+to take them away.
 <p>Each subject is loaded into an empty scene. The scene is closed when you leave a subject,
 so anything else you loaded into it goes as well.
 """)
@@ -203,6 +207,7 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.ui.selectNoLabelsButton.clicked.connect(lambda: self.setAllLabelsChecked(False))
         self.ui.addSegmentButton.clicked.connect(self.onAddSegment)
         self.ui.segmentEditorButton.clicked.connect(self.onOpenSegmentEditor)
+        self.ui.show3DCheckBox.toggled.connect(self.onShow3DToggled)
 
         self.ui.confirmButton.clicked.connect(self.onConfirm)
         self.ui.rejectButton.clicked.connect(self.onReject)
@@ -232,6 +237,7 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.ui.timeoutSpinBox.value = int(settings.value(SETTINGS_PREFIX + "timeout", DEFAULT_TIMEOUT))
         self.ui.keepFilesCheckBox.checked = _toBool(settings.value(SETTINGS_PREFIX + "keepFiles", False))
         self.ui.autoNextCheckBox.checked = _toBool(settings.value(SETTINGS_PREFIX + "autoNext", False))
+        self.ui.show3DCheckBox.checked = _toBool(settings.value(SETTINGS_PREFIX + "show3D", False))
 
     def saveSettings(self):
         settings = qt.QSettings()
@@ -242,6 +248,7 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         settings.setValue(SETTINGS_PREFIX + "timeout", self.ui.timeoutSpinBox.value)
         settings.setValue(SETTINGS_PREFIX + "keepFiles", self.ui.keepFilesCheckBox.checked)
         settings.setValue(SETTINGS_PREFIX + "autoNext", self.ui.autoNextCheckBox.checked)
+        settings.setValue(SETTINGS_PREFIX + "show3D", self.ui.show3DCheckBox.checked)
 
     def applySettingsToSession(self):
         session = self.logic.session
@@ -396,7 +403,7 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
 
         try:
             slicer.app.setOverrideCursor(qt.Qt.WaitCursor)
-            self.logic.loadSubject(handout, segmentationPath, imagePath)
+            self.logic.loadSubject(handout, segmentationPath, imagePath, show3D=self.ui.show3DCheckBox.checked)
         except Exception as error:
             slicer.util.errorDisplay(str(error), windowTitle=_("Could not load the subject"))
         finally:
@@ -651,6 +658,24 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         except Exception as error:
             slicer.util.errorDisplay(str(error), windowTitle=_("Could not open the Segment Editor"))
 
+    def segmentationSent(self):
+        """Whether the segmentation in the scene is one the server sent, rather than an empty
+        one made here to paint from scratch."""
+        return self.logic.segmentationNode is not None and bool(self.logic.session.handout.get("has_segmentation"))
+
+    def onShow3DToggled(self, shown):
+        """Build the 3D models of the segmentation the server sent, or take them away. The tick
+        is remembered, and a subject loaded later comes with its models or without."""
+        if not self.segmentationSent():
+            return
+        try:
+            slicer.app.setOverrideCursor(qt.Qt.WaitCursor)
+            self.logic.showSegmentationIn3D(shown)
+        except Exception as error:
+            slicer.util.errorDisplay(str(error), windowTitle=_("Could not show the segmentation in 3D"))
+        finally:
+            slicer.app.restoreOverrideCursor()
+
     # ---------------------------------------------------------------- verdict
     def onConfirm(self):
         session = self.logic.session
@@ -859,6 +884,9 @@ class BoneHubQualityCheckWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.ui.reviewCollapsibleButton.enabled = loaded
         self.ui.submitCollapsibleButton.enabled = holding
         self.ui.confirmButton.enabled = loaded
+        # A segmentation made here to paint from scratch has no models to show, and the Segment
+        # Editor's Show 3D button is there for it once there is something painted.
+        self.ui.show3DCheckBox.enabled = holding and self.segmentationSent()
         self.ui.nextSubjectButton.enabled = connected
         self.ui.reloadSubjectButton.enabled = connected
         self.ui.extendLeaseButton.enabled = holding
@@ -938,14 +966,15 @@ class BoneHubQualityCheckLogic(ScriptedLoadableModuleLogic):
         self.referenceVolumeNode = None
         self.segmentationNode = None
 
-    def loadSubject(self, handout, segmentationPath=None, imagePath=None):
+    def loadSubject(self, handout, segmentationPath=None, imagePath=None, show3D=False):
         """Load what was sent of one subject: its BoneHub segmentation, one segment per label,
         its image, or both.
 
         Either is enough. Without the segmentation, an empty one is made on the image for the
         editor to add labels to and paint. Without the image, the segmentation is shown,
         edited and written back on its own voxel grid, over a blank volume standing in for
-        the image.
+        the image. With ``show3D``, the segmentation sent is shown as 3D models as well; an
+        empty one made here has none to show.
         """
         self.clearScene()
         subjectKey = handout.get("subject_key", "subject")
@@ -976,7 +1005,44 @@ class BoneHubQualityCheckLogic(ScriptedLoadableModuleLogic):
 
         slicer.util.setSliceViewerLayers(background=self.referenceVolumeNode, fit=True)
         self.centerViewsOnSegmentation()
+        if show3D and segmentationPath is not None:
+            self.showSegmentationIn3D(True)
         return self.segmentationNode
+
+    def showSegmentationIn3D(self, shown):
+        """Show the segments as 3D models in the 3D view, one per label, or take them away.
+
+        The models are the segmentation's closed surfaces, which the Segment Editor's Show 3D
+        button makes and removes as well. Slicer rebuilds a segment's surface each time it is
+        edited, which slows editing a large segmentation, so the models are removed rather
+        than hidden. Either way the segmentation is edited, and written back, as voxels.
+        """
+        if self.segmentationNode is None:
+            return
+        if not shown:
+            self.segmentationNode.RemoveClosedSurfaceRepresentation()
+            return
+        self.segmentationNode.CreateClosedSurfaceRepresentation()
+        displayNode = self.segmentationNode.GetDisplayNode()
+        if displayNode is not None:
+            displayNode.SetVisibility3D(True)
+        layoutManager = slicer.app.layoutManager()
+        if layoutManager is None:  # no main window, so no view to show them in
+            return
+        # A 3D view the layout leaves out still counts among the layout manager's views.
+        threeDViews = [layoutManager.threeDWidget(index).mrmlViewNode() for index in range(layoutManager.threeDViewCount)]
+        if not any(viewNode.IsMappedInLayout() for viewNode in threeDViews):
+            layoutManager.setLayout(slicer.vtkMRMLLayoutNode.SlicerLayoutConventionalView)
+        # The camera is wherever the last subject left it: frame the bones, seen from the front.
+        layoutManager.resetThreeDViews()
+
+    def segmentationShownIn3D(self):
+        """Whether the segmentation in hand has its 3D models."""
+        if self.segmentationNode is None:
+            return False
+        return self.segmentationNode.GetSegmentation().ContainsRepresentation(
+            slicer.vtkSegmentationConverter.GetSegmentationClosedSurfaceRepresentationName()
+        )
 
     def createBlankVolume(self, segmentationPath, name):
         """A blank volume on the voxel grid of a segmentation file, standing in for its image.
@@ -1532,6 +1598,7 @@ class BoneHubQualityCheckTest(ScriptedLoadableModuleTest):
         self.test_AMissingBoneCanBeAdded()
         self.test_ASegmentationIsEditedWithoutItsImage()
         self.test_ASubjectIsSegmentedFromScratchOnItsImage()
+        self.test_TheSegmentationSentCanBeShownIn3D()
         self.test_ASubjectNeedsItsImageOrItsSegmentation()
         self.test_ANewSubjectStartsFromAnEmptyScene()
         self.test_UnknownSegmentsAreRefused()
@@ -1803,6 +1870,32 @@ class BoneHubQualityCheckTest(ScriptedLoadableModuleTest):
         self.assertTrue(np.array_equal(values, expected), "every voxel has the label it was painted with")
         self._assertSameGridAsTheImage(image, self.imagePath)
         self.delayDisplay("Painted from scratch, written on the image's grid")
+
+    def test_TheSegmentationSentCanBeShownIn3D(self):
+        """A model for every label of the segmentation sent, which changes nothing of what is
+        written back; none for a segmentation made here to paint from scratch."""
+        self.delayDisplay("3D models")
+        logic, _volumeNode, expected = self._buildSubject()
+        self.assertFalse(logic.segmentationShownIn3D(), "only when asked")
+
+        logic.loadSubject({"subject_key": "001_000001"}, self.segmentationPath, self.imagePath, show3D=True)
+        self.assertTrue(logic.segmentationShownIn3D())
+        for segmentId in _segmentIds(logic.segmentationNode.GetSegmentation()):
+            surface = vtk.vtkPolyData()
+            logic.segmentationNode.GetClosedSurfaceRepresentation(segmentId, surface)
+            self.assertGreater(surface.GetNumberOfPoints(), 0, f"'{segmentId}' has a model")
+
+        path = Path(tempfile.mkdtemp()) / f"reviewed{SEGMENTATION_SUFFIX}"
+        self.assertEqual(logic.exportReviewedSegmentation(path), {"SKULL": 100000000, "FEMUR_LEFT": 710000001})
+        image, values, _segments = self._readBoneHubFile(path)
+        self.assertTrue(np.array_equal(values, expected), "the models change no voxel")
+        self._assertSameGridAsTheImage(image, self.imagePath)
+
+        logic.showSegmentationIn3D(False)
+        self.assertFalse(logic.segmentationShownIn3D(), "taken away, not only hidden")
+
+        logic.loadSubject({"subject_key": "001_000002"}, None, self.imagePath, show3D=True)
+        self.assertFalse(logic.segmentationShownIn3D(), "a segmentation to paint from scratch was not sent")
 
     def test_ASubjectNeedsItsImageOrItsSegmentation(self):
         """A subject sent neither is not loaded, and the last subject goes all the same."""

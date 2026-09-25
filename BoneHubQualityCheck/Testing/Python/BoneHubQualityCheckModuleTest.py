@@ -7,8 +7,9 @@ there is something to do, that the editor sees why a subject came to them -- the
 rejected and why, the bones reported missing, the administrator's requests, the history with
 its comments, and whose correction the segmentation is -- that a missing bone is ready to
 add, that a subject sent without its segmentation is painted from scratch and one sent
-without its image is corrected, while one sent neither can only be rejected, that the tick
-boxes are there only when the server takes an editor's word and behave across a refresh, and
+without its image is corrected, while one sent neither can only be rejected, that the
+segmentation sent can be shown in 3D, that the tick boxes are there only when the server
+takes an editor's word and behave across a refresh, and
 what confirming, rejecting and an empty queue tell the editor, and send. They need a module
 widget, so they only run in a Slicer with a main window.
 """
@@ -29,7 +30,7 @@ EXPECTED_WIDGETS = [
     "caseTextBrowser", "subjectInfoTextBrowser", "extendLeaseButton", "releaseSubjectButton",
     "subjectCollapsibleButton", "labelsTableWidget", "labelsSummaryLabel",
     "refreshLabelsButton", "selectAllLabelsButton", "selectNoLabelsButton",
-    "addLabelComboBox", "addSegmentButton", "segmentEditorButton",
+    "addLabelComboBox", "addSegmentButton", "segmentEditorButton", "show3DCheckBox",
     "reviewCollapsibleButton", "commentTextEdit", "confirmButton", "rejectButton",
     "autoNextCheckBox", "submitStatusLabel", "submitCollapsibleButton",
     "workspacePathLineEdit", "timeoutSpinBox", "keepFilesCheckBox", "openWorkspaceButton",
@@ -98,6 +99,7 @@ class BoneHubQualityCheckModuleTest(ScriptedLoadableModuleTest):
         self.test_ASubjectWithoutASegmentationIsSegmentedFromScratch()
         self.test_ASubjectSentNothingCanOnlyBeRejected()
         self.test_ASubjectWithoutAnImageCanBeCorrected()
+        self.test_TheSegmentationSentCanBeShownIn3D()
         self.test_TicksAreThereOnlyWhenTheyCount()
         self.test_TicksSurviveARefresh()
         self.test_ConfirmingUploadsACorrectionThatWaitsOnTheServer()
@@ -388,6 +390,46 @@ class BoneHubQualityCheckModuleTest(ScriptedLoadableModuleTest):
             editor.setActiveEffect(None)
         finally:
             slicer.util.selectModule("BoneHubQualityCheck")
+
+    def test_TheSegmentationSentCanBeShownIn3D(self):
+        """The tick builds 3D models of the segmentation the server sent and takes them away, and
+        a subject loaded while it is on comes with its models; one sent without a segmentation
+        has none to show."""
+        self.delayDisplay("3D models")
+        widget = self.widget()
+        checkBox = widget.ui.show3DCheckBox
+        wasChecked = checkBox.checked
+        try:
+            checkBox.checked = False
+            logic = self.subjectInScene(widget)
+            self.assertTrue(checkBox.enabled)
+            self.assertFalse(logic.segmentationShownIn3D())
+            checkBox.checked = True
+            self.assertTrue(logic.segmentationShownIn3D())
+            checkBox.checked = False
+            self.assertFalse(logic.segmentationShownIn3D())
+
+            checkBox.checked = True
+            logic.session.download_segmentation = (
+                lambda: self.segmentationPath if logic.session.handout.get("has_segmentation") else None
+            )
+            logic.session.download_image = lambda: self.imagePath
+            sent = handout()
+            logic.session.handout = sent
+            widget.downloadAndLoad(sent)
+            self.assertTrue(logic.segmentationShownIn3D(), "loaded with its models")
+            self.assertTrue(checkBox.enabled)
+
+            fromScratch = handout(
+                assignment_id="a2", subject_key="001_000002", has_segmentation=False, segmentation_source=None,
+                segmentation_labels={}, labels=[], history=[],
+            )
+            logic.session.handout = fromScratch
+            widget.downloadAndLoad(fromScratch)
+            self.assertFalse(logic.segmentationShownIn3D())
+            self.assertFalse(checkBox.enabled, "nothing was sent to show")
+        finally:
+            checkBox.checked = wasChecked
 
     def test_TicksAreThereOnlyWhenTheyCount(self):
         """A tick is the editor's word, which the server takes only when corrections need no
